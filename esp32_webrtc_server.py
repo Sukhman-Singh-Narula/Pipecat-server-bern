@@ -434,8 +434,8 @@ if __name__ == "__main__":
     
     uvicorn.run(
         "esp32_webrtc_server:app" if args.reload else app,
-        host=args.host,
-        port=args.port,
+        host="64.",
+        port=8000,
         reload=args.reload,
         log_level=args.log_level
     )

@@ -222,7 +222,7 @@ if __name__ == "__main__":
     
     uvicorn.run(
         app,
-        host=args.host,
-        port=args.port,
+        host="64.227.157.74",
+        port=7860,
         log_level=args.log_level
     )
