@@ -1,31 +1,21 @@
 #!/usr/bin/env python3
 """
-ESP32 WebRTC Conversational AI Server
+Simple ESP32 WebRTC Conversational AI Server
 
-A FastAPI server that connects with ESP32 devices using WebRTC and provides
-conversational AI capabilities using Pipecat framework.
-
-Features:
-- WebRTC connection for real-time audio communication
-- Speech-to-Text using Deepgram
-- Conversational AI using OpenAI GPT
-- Text-to-Speech using Cartesia
-- Voice Activity Detection for interruption handling
-- ESP32 device management and connection tracking
+A minimal FastAPI server for WebRTC audio conversation with AI.
 """
 
 import argparse
 import asyncio
 import os
-import uuid
 from contextlib import asynccontextmanager
-from typing import Dict, Optional
+from typing import Dict
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from loguru import logger
 from pydantic import BaseModel
 
@@ -45,76 +35,30 @@ from pipecat.transports.network.webrtc_connection import IceServer, SmallWebRTCC
 load_dotenv(override=True)
 
 # FastAPI app instance
-app = FastAPI(
-    title="ESP32 WebRTC AI Assistant",
-    description="A conversational AI server for ESP32 devices using WebRTC",
-    version="1.0.0"
-)
+app = FastAPI(title="ESP32 WebRTC AI Assistant")
 
-# CORS middleware for cross-origin requests (needed for web clients)
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Store WebRTC connections by device ID
-device_connections: Dict[str, SmallWebRTCConnection] = {}
-device_sessions: Dict[str, dict] = {}
+# Store WebRTC connections
+pcs_map: Dict[str, SmallWebRTCConnection] = {}
 
 # ICE servers for WebRTC connection
 ice_servers = [
     IceServer(urls="stun:stun.l.google.com:19302"),
-    IceServer(urls="stun:stun1.l.google.com:19302"),
-    # Add TURN servers if needed for NAT traversal
-    # IceServer(
-    #     urls="turn:your-turn-server.com:3478",
-    #     username="your-username",
-    #     credential="your-password"
-    # )
 ]
 
-
-# Pydantic models for API requests
+# Pydantic models
 class WebRTCOfferRequest(BaseModel):
-    """WebRTC offer request from ESP32 device."""
-    device_id: str
     sdp: str
     type: str = "offer"
     restart_pc: bool = False
-
-
-class DeviceRegistrationRequest(BaseModel):
-    """Device registration request."""
-    device_id: str
-    device_name: Optional[str] = None
-    device_type: str = "esp32"
-    capabilities: Optional[dict] = None
-
-
-class ConversationConfig(BaseModel):
-    """Configuration for conversation AI."""
-    system_prompt: Optional[str] = None
-    voice_id: Optional[str] = None
-    language: str = "en"
-    interrupt_enabled: bool = True
-
-
-# AI Assistant Configuration
-DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant running on an ESP32 device. 
-You can help with various tasks and answer questions. Your responses will be converted to audio, 
-so speak naturally and avoid special characters. Keep your responses concise but informative.
-You are designed to work with IoT devices and can help with technical questions about ESP32, 
-Arduino, and embedded systems."""
-
-# Cartesia voice IDs (you can add more)
-VOICE_OPTIONS = {
-    "british_lady": "71a7ad14-091c-4e8e-a314-022ece01c121",
-    "american_male": "a0e99841-438c-4a64-b679-ae501e7d6091",
-    "friendly_female": "79a125e8-cd45-4c13-8a67-188112f4dd22",
-}
 
 
 async def create_conversation_pipeline(
