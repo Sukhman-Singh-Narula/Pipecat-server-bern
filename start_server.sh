@@ -243,8 +243,8 @@ main() {
     fi
     
     # Build server command
-    SERVER_CMD="python esp32_webrtc_server.py --host $HOST --port $PORT --log-level $LOG_LEVEL"
-    
+    SERVER_CMD="python simple_webrtc_server.py --host $HOST --port $PORT --log-level $LOG_LEVEL"
+
     if [ "$RELOAD" = true ]; then
         SERVER_CMD="$SERVER_CMD --reload"
         print_info "Development mode: Auto-reload enabled"
