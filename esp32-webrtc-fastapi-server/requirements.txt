@@ -1,6 +1,0 @@
-# requirements.txt for ESP32 WebRTC FastAPI Server
-fastapi
-uvicorn
-python-dotenv
-loguru
-pipecat  # Assuming pipecat is available as a pip package
