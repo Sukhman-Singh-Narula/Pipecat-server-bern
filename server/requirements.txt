@@ -1,0 +1,2 @@
+pipecat-ai[webrtc,silero,deepgram,openai,cartesia,runner,daily]>=0.0.77
+python-dotenv>=1.0.0,<2.0.0

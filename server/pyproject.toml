@@ -1,0 +1,20 @@
+[project]
+name = "pipecat-server-minimal"
+version = "1.0.0"
+description = "Minimalistic Pipecat server for voice assistants"
+requires-python = ">=3.10"
+dependencies = [
+    "pipecat-ai[webrtc,silero,deepgram,openai,cartesia,runner,daily]>=0.0.77",
+    "python-dotenv>=1.0.0,<2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "flake8",
+]
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
