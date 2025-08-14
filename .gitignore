@@ -1,4 +1,66 @@
+# Ignore the embedded Realtime server repository
+Realtime server/
+
+# Environment files
 .env
 !.env.example
+
+# Examples and virtual environments
 pipecat-examples/
 venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Firebase credentials
+firebase-credentials.json
+
+# Local storage files
+local_users.json
+local_prompts.json
+
+# Server temporary files
+server.log

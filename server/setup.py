@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Quick setup script for the minimalistic Pipecat server.
+Enhanced setup script for the Pipecat server.
 This script helps you get started quickly by checking dependencies
 and providing setup instructions.
 """
@@ -33,7 +33,7 @@ def check_env_file():
     missing_keys = []
     
     for key in required_keys:
-        if f"{key}=your_" in content or f"{key}=..." in content:
+        if f"{key}=your_" in content or f"{key}=..." in content or key not in content:
             missing_keys.append(key)
     
     if missing_keys:
@@ -44,6 +44,17 @@ def check_env_file():
     
     print("✅ .env file configured")
     return True
+
+def check_firebase_setup():
+    """Check Firebase configuration."""
+    if os.path.exists('firebase-credentials.json'):
+        print("✅ Firebase credentials found")
+        return True
+    else:
+        print("⚠️  Firebase credentials not found")
+        print("   The server will use local JSON storage instead")
+        print("   For full functionality, add firebase-credentials.json")
+        return False
 
 def install_dependencies():
     """Install required dependencies."""
@@ -57,9 +68,19 @@ def install_dependencies():
         print(f"❌ Failed to install dependencies: {e}")
         return False
 
+def create_local_storage_files():
+    """Create local storage files if they don't exist."""
+    local_files = ['local_users.json', 'local_prompts.json']
+    
+    for file_name in local_files:
+        if not os.path.exists(file_name):
+            with open(file_name, 'w') as f:
+                f.write('{}')
+            print(f"✅ Created {file_name}")
+
 def main():
-    print("🤖 Pipecat Server Setup")
-    print("=" * 30)
+    print("🚀 Enhanced Pipecat Server Setup")
+    print("=" * 40)
     
     if not check_python_version():
         sys.exit(1)
@@ -71,12 +92,33 @@ def main():
         print("3. Run this script again")
         sys.exit(1)
     
+    # Check Firebase (not required)
+    firebase_available = check_firebase_setup()
+    
     if install_dependencies():
+        create_local_storage_files()
+        
         print("\n🎉 Setup complete!")
-        print("\nTo run the bot:")
-        print("  python bot.py")
-        print("\nTo run with Daily transport:")
-        print("  python bot.py --transport daily")
+        print("\nYour enhanced server includes:")
+        print("  🎤 WebRTC audio streaming")
+        print("  👤 User registration and management")
+        print("  📚 Episode-based system prompts")
+        print("  📊 Learning progress tracking")
+        print("  🔥 Firebase integration" + (" (configured)" if firebase_available else " (using local storage)"))
+        
+        print("\nTo run the server:")
+        print("  # WebRTC (recommended for ESP32)")
+        print("  python bot.py --transport webrtc --host 0.0.0.0 --esp32")
+        print("  ")
+        print("  # Daily transport")
+        print("  python bot.py --transport daily --host 0.0.0.0")
+        
+        print("\nTo test the server:")
+        print("  python test_server.py")
+        
+        print("\nAPI Documentation:")
+        print("  http://localhost:7860/docs (after starting server)")
+        
     else:
         print("\n❌ Setup failed. Please check the error messages above.")
         sys.exit(1)

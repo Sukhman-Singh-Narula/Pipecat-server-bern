@@ -1,0 +1,26 @@
+{
+  "TEST1234": {
+    "device_id": "TEST1234",
+    "name": "Test User",
+    "age": 25,
+    "status": "active",
+    "progress": {
+      "season": 1,
+      "episode": 1,
+      "words_learnt": [
+        "hello",
+        "goodbye",
+        "thank you"
+      ],
+      "topics_learnt": [
+        "greetings",
+        "basic politeness"
+      ],
+      "total_time": 0.0,
+      "episodes_completed": 0
+    },
+    "created_at": "2025-08-14T13:18:03.366629",
+    "last_active": "2025-08-14T13:18:26.050482",
+    "last_completed_episode": null
+  }
+}
