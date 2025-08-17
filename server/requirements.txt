@@ -1,4 +1,4 @@
-pipecat-ai[webrtc,silero,deepgram,openai,cartesia,runner,daily]>=0.0.77
+pipecat-ai[webrtc,silero,deepgram,openai,playht,runner,daily]>=0.0.77
 python-dotenv>=1.0.0,<2.0.0
 fastapi>=0.115.6,<0.117.0
 uvicorn>=0.32.0,<1.0.0
