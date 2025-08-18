@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Minimalistic Pipecat server for voice assistants"
 requires-python = ">=3.10"
 dependencies = [
-    "pipecat-ai[webrtc,silero,deepgram,openai,playht,runner,daily]>=0.0.77",
+    "pipecat-ai[webrtc,silero,deepgram,openai,elevenlabs,runner,daily]>=0.0.77",
     "python-dotenv>=1.0.0,<2.0.0",
     "fastapi>=0.115.6,<0.117.0",
     "uvicorn>=0.32.0,<1.0.0",
