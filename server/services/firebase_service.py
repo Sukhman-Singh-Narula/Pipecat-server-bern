@@ -114,6 +114,39 @@ class FirebaseService(LoggerMixin):
             "last_completed_episode": user.last_completed_episode.isoformat() if user.last_completed_episode else None
         }
     
+    def _parse_datetime(self, value: Any) -> Optional[datetime]:
+        """Safely parse datetime from various formats"""
+        if value is None:
+            return None
+        
+        # If it's already a datetime object, return it
+        if isinstance(value, datetime):
+            return value
+        
+        # If it's a string, try to parse it
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                try:
+                    # Try other common formats if fromisoformat fails
+                    from dateutil.parser import parse
+                    return parse(value)
+                except:
+                    self.logger.warning(f"Failed to parse datetime: {value}")
+                    return None
+        
+        # For any other type (int timestamp, etc.), try to convert
+        try:
+            # Assume it's a timestamp if it's a number
+            if isinstance(value, (int, float)):
+                return datetime.fromtimestamp(value)
+        except:
+            pass
+        
+        self.logger.warning(f"Unable to parse datetime from: {value} (type: {type(value)})")
+        return None
+    
     def _dict_to_user(self, data: Dict[str, Any]) -> User:
         """Convert dictionary to User object"""
         progress_data = data.get("progress", {})
@@ -132,9 +165,9 @@ class FirebaseService(LoggerMixin):
             age=data["age"],
             status=UserStatus(data.get("status", "active")),
             progress=progress,
-            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None,
-            last_active=datetime.fromisoformat(data["last_active"]) if data.get("last_active") else None,
-            last_completed_episode=datetime.fromisoformat(data["last_completed_episode"]) if data.get("last_completed_episode") else None
+            created_at=self._parse_datetime(data.get("created_at")),
+            last_active=self._parse_datetime(data.get("last_active")),
+            last_completed_episode=self._parse_datetime(data.get("last_completed_episode"))
         )
     
     # User operations
