@@ -5,6 +5,7 @@
 #
 
 import os
+import aiohttp
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -15,8 +16,8 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
-from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.elevenlabs.tts import ElevenLabsHttpTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketParams
@@ -47,64 +48,66 @@ transport_params = {
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     """Core bot logic for Pipecat Cloud compatibility"""
-    
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    logger.info(f"Starting bot")
 
-    tts = ElevenLabsTTSService(
-        api_key=os.getenv("ELEVENLABS_API_KEY"),
-        voice_id="pNInz6obpgDQGcFmaJgB"  # ElevenLabs: Adam voice (free)
-    )
+    # Create an HTTP session
+    async with aiohttp.ClientSession() as session:
+        stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
+        tts = ElevenLabsHttpTTSService(
+            api_key=os.getenv("ELEVENLABS_API_KEY", ""),
+            voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
+            aiohttp_session=session,
+        )
 
-    # Default system prompt for basic functionality
-    messages = [
-        {
-            "role": "system",
-            "content": """You are an AI tutor helping students learn complex concepts. 
-            You should be encouraging, clear, and provide examples when explaining difficult topics.
-            Always ask follow-up questions to ensure the student understands the material.""",
-        },
-    ]
+        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
-
-    pipeline = Pipeline(
-        [
-            transport.input(),  # Transport user input
-            stt,
-            context_aggregator.user(),  # User responses
-            llm,  # LLM
-            tts,  # TTS
-            transport.output(),  # Transport bot output
-            context_aggregator.assistant(),  # Assistant spoken responses
+        # Default system prompt for basic functionality
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful LLM in a WebRTC call. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way.",
+            },
         ]
-    )
 
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            enable_metrics=True,
-            enable_usage_metrics=True,
-        ),
-        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
-    )
+        context = OpenAILLMContext(messages)
+        context_aggregator = llm.create_context_aggregator(context)
 
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info("Client connected")
-        # Kick off the conversation
-        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-        await task.queue_frames([context_aggregator.user().get_context_frame()])
+        pipeline = Pipeline(
+            [
+                transport.input(),  # Transport user input
+                stt,
+                context_aggregator.user(),  # User responses
+                llm,  # LLM
+                tts,  # TTS
+                transport.output(),  # Transport bot output
+                context_aggregator.assistant(),  # Assistant spoken responses
+            ]
+        )
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info("Client disconnected")
-        await task.cancel()
+        task = PipelineTask(
+            pipeline,
+            params=PipelineParams(
+                enable_metrics=True,
+                enable_usage_metrics=True,
+            ),
+            idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+        )
 
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.run(task)
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, client):
+            logger.info(f"Client connected")
+            # Kick off the conversation
+            messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+            await task.queue_frames([context_aggregator.user().get_context_frame()])
+
+        @transport.event_handler("on_client_disconnected")
+        async def on_client_disconnected(transport, client):
+            logger.info(f"Client disconnected")
+            await task.cancel()
+
+        runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+        await runner.run(task)
 
 
 async def bot(runner_args: RunnerArguments):

@@ -8,6 +8,7 @@ import os
 import asyncio
 import uvicorn
 import argparse
+import aiohttp
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -23,8 +24,8 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.runner.types import RunnerArguments
-from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.elevenlabs.tts import ElevenLabsHttpTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketParams
@@ -94,9 +95,7 @@ async def get_system_prompt_for_user(device_id: str) -> str:
 
 def get_default_system_prompt() -> str:
     """Default system prompt when no custom prompt is found"""
-    return """You are an AI tutor helping students learn complex concepts. 
-    You should be encouraging, clear, and provide examples when explaining difficult topics.
-    Always ask follow-up questions to ensure the student understands the material."""
+    return """You are a helpful LLM in a WebRTC call. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way."""
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -294,84 +293,87 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
     """Enhanced bot with dynamic system prompts based on user progress"""
     logger.info(f"Starting enhanced bot for device: {device_id}")
 
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    # Create an HTTP session - CRUCIAL for proper TTS operation
+    async with aiohttp.ClientSession() as session:
+        stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-    tts = ElevenLabsTTSService(
-        api_key=os.getenv("ELEVENLABS_API_KEY"),
-        voice_id="pNInz6obpgDQGcFmaJgB"  # ElevenLabs: Adam voice (free)
-    )
+        tts = ElevenLabsHttpTTSService(
+            api_key=os.getenv("ELEVENLABS_API_KEY", ""),
+            voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
+            aiohttp_session=session,
+        )
 
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
+        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
-    # Get user-specific system prompt based on their progress
-    system_prompt = await get_system_prompt_for_user(device_id) if device_id else get_default_system_prompt()
-    
-    logger.info(f"Using system prompt for device {device_id}: {system_prompt[:100]}...")
+        # Get user-specific system prompt based on their progress
+        system_prompt = await get_system_prompt_for_user(device_id) if device_id else get_default_system_prompt()
+        
+        logger.info(f"Using system prompt for device {device_id}: {system_prompt[:100]}...")
 
-    # Initialize with custom system prompt
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt,
-        },
-    ]
-
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
-
-    pipeline = Pipeline(
-        [
-            transport.input(),  # Transport user input
-            stt,
-            context_aggregator.user(),  # User responses
-            llm,  # LLM
-            tts,  # TTS
-            transport.output(),  # Transport bot output
-            context_aggregator.assistant(),  # Assistant spoken responses
+        # Initialize with custom system prompt
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
         ]
-    )
 
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            enable_metrics=True,
-            enable_usage_metrics=True,
-        ),
-        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
-    )
+        context = OpenAILLMContext(messages)
+        context_aggregator = llm.create_context_aggregator(context)
 
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info(f"Client connected - Device ID: {device_id}")
-        
-        if device_id:
-            try:
-                # Update user's last active time
-                user_service = get_user_service()
+        pipeline = Pipeline(
+            [
+                transport.input(),  # Transport user input
+                stt,
+                context_aggregator.user(),  # User responses
+                llm,  # LLM
+                tts,  # TTS
+                transport.output(),  # Transport bot output
+                context_aggregator.assistant(),  # Assistant spoken responses
+            ]
+        )
+
+        task = PipelineTask(
+            pipeline,
+            params=PipelineParams(
+                enable_metrics=True,
+                enable_usage_metrics=True,
+            ),
+            idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+        )
+
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, client):
+            logger.info(f"Client connected - Device ID: {device_id}")
+            
+            if device_id:
                 try:
-                    user_response = await user_service.get_user(device_id)
-                    logger.info(f"User {device_id} reconnected - Season {user_response.season}, Episode {user_response.episode}")
+                    # Update user's last active time
+                    user_service = get_user_service()
+                    try:
+                        user_response = await user_service.get_user(device_id)
+                        logger.info(f"User {device_id} reconnected - Season {user_response.season}, Episode {user_response.episode}")
+                        
+                        # Update last active time
+                        await user_service.update_last_active(device_id)
+                        
+                    except UserNotFoundException:
+                        logger.warning(f"Connected device {device_id} not registered")
                     
-                    # Update last active time
-                    await user_service.update_last_active(device_id)
-                    
-                except UserNotFoundException:
-                    logger.warning(f"Connected device {device_id} not registered")
-                
-            except Exception as e:
-                logger.error(f"Failed to update user info: {e}")
-        
-        # Kick off the conversation with introduction
-        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-        await task.queue_frames([context_aggregator.user().get_context_frame()])
+                except Exception as e:
+                    logger.error(f"Failed to update user info: {e}")
+            
+            # Kick off the conversation with introduction
+            messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+            await task.queue_frames([context_aggregator.user().get_context_frame()])
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info(f"Client disconnected - Device ID: {device_id}")
-        await task.cancel()
+        @transport.event_handler("on_client_disconnected")
+        async def on_client_disconnected(transport, client):
+            logger.info(f"Client disconnected - Device ID: {device_id}")
+            await task.cancel()
 
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.run(task)
+        runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+        await runner.run(task)
 
 # Create the enhanced app
 app = create_enhanced_app()
