@@ -70,20 +70,33 @@ async def get_system_prompt_for_user(device_id: str) -> str:
     Returns:
         str: System prompt content
     """
+    if not device_id:
+        return get_default_system_prompt()
+        
     try:
         user_service = get_user_service()
         prompt_service = get_prompt_service()
         
         # Get user's current progress
         user_response = await user_service.get_user(device_id)
+        if not user_response:
+            logger.warning(f"User {device_id} not found, using default prompt")
+            return get_default_system_prompt()
+            
         season = user_response.season
         episode = user_response.episode
+        
+        logger.info(f"Fetching system prompt for user {device_id}: Season {season}, Episode {episode}")
         
         # Get system prompt for current episode
         prompt_content = await prompt_service.get_prompt_content(season, episode)
         
-        logger.info(f"Retrieved system prompt for {device_id}: Season {season}, Episode {episode}")
-        return prompt_content
+        if prompt_content:
+            logger.info(f"Retrieved custom system prompt for {device_id}: Season {season}, Episode {episode}")
+            return prompt_content
+        else:
+            logger.warning(f"No custom prompt found for Season {season}, Episode {episode}, using default")
+            return get_default_system_prompt()
         
     except UserNotFoundException:
         logger.warning(f"User {device_id} not found, using default prompt")
@@ -325,29 +338,135 @@ def create_enhanced_app() -> FastAPI:
     # WebRTC offer endpoint for ESP32 devices
     @app.post("/api/offer",
               summary="WebRTC offer handler",
-              description="Handle WebRTC offer from ESP32 devices")
+              description="Handle WebRTC offer from ESP32 devices with custom prompts")
     async def handle_webrtc_offer(offer_data: dict):
-        """Handle WebRTC offer from ESP32 devices"""
+        """Handle WebRTC offer from ESP32 devices with dynamic system prompts"""
         try:
             logger.info(f"Received WebRTC offer from ESP32: {offer_data}")
             
-            # For now, return a basic WebRTC answer
-            # This endpoint needs to be integrated with the actual pipecat WebRTC transport
-            # when a client connects via WebRTC
+            # Extract device_id from offer data if provided
+            device_id = offer_data.get("device_id")
+            if not device_id:
+                # Try to extract from other fields if needed
+                device_id = offer_data.get("metadata", {}).get("device_id")
             
-            answer = {
-                "type": "answer",
-                "sdp": offer_data.get("sdp", ""),
-                "status": "accepted",
-                "message": "WebRTC offer received and processed"
-            }
+            logger.info(f"Processing WebRTC offer for device: {device_id}")
             
-            logger.info(f"Returning WebRTC answer: {answer}")
+            # Create WebRTC transport using the same method as bot.py
+            transport_config = transport_params["webrtc"]()
+            
+            # Import necessary classes
+            from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
+            
+            # Create the transport
+            transport = SmallWebRTCTransport(**transport_config.__dict__)
+            
+            # Handle the actual WebRTC offer
+            answer = await transport.handle_offer(offer_data)
+            
+            # Create runner args similar to bot.py
+            from types import SimpleNamespace
+            runner_args = SimpleNamespace(
+                transport="webrtc",
+                log_level="info",
+                pipeline_idle_timeout_secs=30,
+                handle_sigint=False
+            )
+            
+            # Start the bot pipeline in the background with custom system prompt
+            import asyncio
+            asyncio.create_task(run_enhanced_bot(transport, runner_args, device_id))
+            
+            logger.info(f"WebRTC connection established for device: {device_id}")
             return answer
                 
         except Exception as e:
             logger.error(f"Error handling WebRTC offer: {e}")
             raise HTTPException(status_code=500, detail=f"WebRTC offer failed: {str(e)}")
+
+
+async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None):
+    """Enhanced bot with dynamic system prompts based on user progress"""
+    logger.info(f"Starting enhanced bot for device: {device_id}")
+
+    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+
+    tts = ElevenLabsTTSService(
+        api_key=os.getenv("ELEVENLABS_API_KEY"),
+        voice_id="pNInz6obpgDQGcFmaJgB"  # ElevenLabs: Adam voice (free)
+    )
+
+    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
+
+    # Get user-specific system prompt based on their progress
+    system_prompt = await get_system_prompt_for_user(device_id) if device_id else get_default_system_prompt()
+    
+    logger.info(f"Using system prompt for device {device_id}: {system_prompt[:100]}...")
+
+    # Initialize with custom system prompt
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt,
+        },
+    ]
+
+    context = OpenAILLMContext(messages)
+    context_aggregator = llm.create_context_aggregator(context)
+
+    pipeline = Pipeline(
+        [
+            transport.input(),  # Transport user input
+            stt,
+            context_aggregator.user(),  # User responses
+            llm,  # LLM
+            tts,  # TTS
+            transport.output(),  # Transport bot output
+            context_aggregator.assistant(),  # Assistant spoken responses
+        ]
+    )
+
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            enable_metrics=True,
+            enable_usage_metrics=True,
+        ),
+        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+    )
+
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        logger.info(f"Client connected - Device ID: {device_id}")
+        
+        if device_id:
+            try:
+                # Update user's last active time
+                user_service = get_user_service()
+                try:
+                    user_response = await user_service.get_user(device_id)
+                    logger.info(f"User {device_id} reconnected - Season {user_response.season}, Episode {user_response.episode}")
+                    
+                    # Update last active time
+                    await user_service.update_last_active(device_id)
+                    
+                except UserNotFoundException:
+                    logger.warning(f"Connected device {device_id} not registered")
+                
+            except Exception as e:
+                logger.error(f"Failed to update user info: {e}")
+        
+        # Kick off the conversation with introduction
+        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+        await task.queue_frames([context_aggregator.user().get_context_frame()])
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        logger.info(f"Client disconnected - Device ID: {device_id}")
+        await task.cancel()
+
+    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+    await runner.run(task)
 
     # Client endpoint for WebRTC connection
     @app.get("/client",
