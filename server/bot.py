@@ -263,10 +263,10 @@ def create_enhanced_app() -> FastAPI:
         allow_headers=["*"],
     )
     
-    # Include enhanced routers
-    app.include_router(auth_router)
-    app.include_router(users_router)
-    app.include_router(prompts_router)
+    # Include enhanced routers (prefixes are already defined in router files)
+    app.include_router(auth_router, tags=["authentication"])
+    app.include_router(users_router, tags=["users"])
+    app.include_router(prompts_router, tags=["prompts"])
     
     # Enhanced root endpoint
     @app.get("/", 
@@ -315,8 +315,65 @@ def create_enhanced_app() -> FastAPI:
             "services": {
                 "firebase": "available" if get_firebase_service().use_firebase else "local_storage",
                 "user_service": "running",
-                "prompt_service": "running"
+                "prompt_service": "running",
+                "openai": "available" if os.getenv("OPENAI_API_KEY") else "missing",
+                "deepgram": "available" if os.getenv("DEEPGRAM_API_KEY") else "missing",
+                "elevenlabs": "available" if os.getenv("ELEVENLABS_API_KEY") else "missing"
             }
+        }
+
+    # WebRTC offer endpoint for ESP32 devices
+    @app.post("/api/offer",
+              summary="WebRTC offer handler",
+              description="Handle WebRTC offer from ESP32 devices")
+    async def handle_webrtc_offer(request):
+        """Handle WebRTC offer from ESP32 devices"""
+        try:
+            import json
+            from pipecat.runner.run import main as pipecat_main
+            from pipecat.runner.utils import create_runner, create_transport
+            
+            # Get the offer data
+            body = await request.json() if hasattr(request, 'json') else request
+            
+            logger.info(f"Received WebRTC offer: {body}")
+            
+            # Create transport for WebRTC
+            runner_args = type('Args', (), {
+                'transport': 'webrtc',
+                'log_level': 'info',
+                'pipeline_idle_timeout_secs': 30
+            })()
+            
+            # Create and run transport
+            transport = await create_transport(runner_args, transport_params)
+            
+            # Handle the WebRTC offer
+            if hasattr(transport, 'handle_offer'):
+                answer = await transport.handle_offer(body)
+                logger.info(f"WebRTC answer created: {answer}")
+                return answer
+            else:
+                # Fallback: return a basic WebRTC answer structure
+                return {
+                    "type": "answer",
+                    "sdp": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error handling WebRTC offer: {e}")
+            raise HTTPException(status_code=500, detail=f"WebRTC offer failed: {str(e)}")
+
+    # Client endpoint for WebRTC connection
+    @app.get("/client",
+             summary="WebRTC client page",
+             description="WebRTC client interface for testing")
+    async def webrtc_client():
+        """WebRTC client interface"""
+        return {
+            "message": "WebRTC client endpoint",
+            "instructions": "Use this endpoint to connect your ESP32 device",
+            "offer_endpoint": "/api/offer"
         }
     
     return app
