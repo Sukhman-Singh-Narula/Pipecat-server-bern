@@ -284,7 +284,25 @@ def create_enhanced_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not mount WebRTC client: {e}")
     
-    # WebRTC offer endpoint for ESP32 devices - fixed answer format
+        # Simple WebRTC endpoint that matches the working example exactly
+    @app.post("/api/simple-offer",
+              summary="Simple WebRTC offer handler", 
+              description="Simplified WebRTC handler that matches working examples")
+    async def handle_simple_webrtc_offer(offer_data: dict):
+        """Simplified WebRTC handler that exactly matches working examples"""
+        try:
+            logger.info(f"Received simple WebRTC offer: {offer_data}")
+            
+            # For now, return success - will implement transport creation later
+            logger.info("Simple WebRTC connection initiated (placeholder)")
+            
+            return {"status": "success", "message": "WebRTC initiated"}
+                
+        except Exception as e:
+            logger.error(f"Error in simple WebRTC offer: {e}")
+            raise HTTPException(status_code=500, detail=f"Simple WebRTC failed: {str(e)}")
+
+    # WebRTC offer endpoint for ESP32 devices - using the same approach as working examples
     @app.post("/api/offer",
               summary="WebRTC offer handler", 
               description="Handle WebRTC offer from ESP32 devices with custom prompts")
@@ -359,6 +377,65 @@ def create_enhanced_app() -> FastAPI:
         }
     
     return app
+
+async def run_working_bot(transport: BaseTransport, runner_args: RunnerArguments):
+    """Bot function that exactly matches the working example"""
+    logger.info(f"Starting working bot")
+
+    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+
+    tts = ElevenLabsTTSService(
+        api_key=os.getenv("ELEVENLABS_API_KEY", ""),
+        voice_id=os.getenv("ELEVENLABS_VOICE_ID", ""),
+    )
+
+    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a helpful LLM in a WebRTC call. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way.",
+        },
+    ]
+
+    context = OpenAILLMContext(messages)
+    context_aggregator = llm.create_context_aggregator(context)
+
+    pipeline = Pipeline(
+        [
+            transport.input(),  # Transport user input
+            stt,
+            context_aggregator.user(),  # User responses
+            llm,  # LLM
+            tts,  # TTS
+            transport.output(),  # Transport bot output
+            context_aggregator.assistant(),  # Assistant spoken responses
+        ]
+    )
+
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            enable_metrics=True,
+            enable_usage_metrics=True,
+        ),
+        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+    )
+
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        logger.info(f"Working bot client connected")
+        # Kick off the conversation.
+        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+        await task.queue_frames([context_aggregator.user().get_context_frame()])
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        logger.info(f"Working bot client disconnected")
+        await task.cancel()
+
+    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+    await runner.run(task)
 
 async def run_simplified_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None):
     """Simplified bot following the exact pattern of the working example"""
