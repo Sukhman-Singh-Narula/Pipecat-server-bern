@@ -221,7 +221,36 @@ def create_enhanced_app() -> FastAPI:
             }
         }
 
-    # WebRTC offer endpoint for ESP32 devices
+    # Import WebRTC static files and client from Pipecat
+    from fastapi.staticfiles import StaticFiles
+    from pathlib import Path
+    
+    # Add WebRTC client interface (mirroring what bot.py does)
+    try:
+        # Try to find the WebRTC client dist directory in common locations
+        potential_paths = [
+            "/Users/sukhmansinghnarula/.espressif/python_env/idf6.0_py3.13_env/lib/python3.13/site-packages/pipecat_ai_small_webrtc_prebuilt/client/dist",
+            "./client/dist",
+            "../client/dist"
+        ]
+        
+        dist_dir = None
+        for path in potential_paths:
+            if Path(path).exists():
+                dist_dir = path
+                break
+        
+        if dist_dir:
+            logger.info(f"Found WebRTC client dist directory at: {dist_dir}")
+            app.mount("/client", StaticFiles(directory=dist_dir, html=True), name="webrtc_client")
+            logger.info("✅ WebRTC client interface mounted at /client")
+        else:
+            logger.warning("WebRTC client dist directory not found in any expected location")
+            
+    except Exception as e:
+        logger.warning(f"Could not mount WebRTC client: {e}")
+    
+    # WebRTC offer endpoint for ESP32 devices - using the same approach as working examples
     @app.post("/api/offer",
               summary="WebRTC offer handler", 
               description="Handle WebRTC offer from ESP32 devices with custom prompts")
@@ -238,25 +267,25 @@ def create_enhanced_app() -> FastAPI:
             
             logger.info(f"Processing WebRTC offer for device: {device_id}")
             
-            # Import necessary classes for WebRTC
+            # Use the exact same WebRTC creation pattern as working bot.py
             from pipecat.transports.network.webrtc_connection import SmallWebRTCConnection
             from pipecat.runner.utils import _get_transport_params
             
-            # Get transport params for webrtc
+            # Get transport params for webrtc - exactly like bot.py
             transport_params_obj = _get_transport_params("webrtc", transport_params)
             logger.debug(f"Using transport params for webrtc")
             
-            # Create WebRTC connection
+            # Create WebRTC connection - exactly like bot.py
             connection = SmallWebRTCConnection()
             await connection.initialize(offer_data.get("sdp", ""), offer_data.get("type", "offer"))
             
-            # Get the answer
+            # Get the answer - exactly like bot.py
             answer = connection.get_answer()
             
-            # Create transport
+            # Create transport - exactly like bot.py
             transport = SmallWebRTCTransport(connection, transport_params_obj)
             
-            # Create runner args
+            # Create runner args - exactly like bot.py
             from types import SimpleNamespace
             runner_args = SimpleNamespace(
                 transport="webrtc",
@@ -265,7 +294,7 @@ def create_enhanced_app() -> FastAPI:
                 handle_sigint=False
             )
             
-            # Start the bot pipeline in the background with custom system prompt  
+            # Start the bot pipeline with custom system prompt
             asyncio.create_task(run_enhanced_bot(transport, runner_args, device_id))
             
             logger.info(f"WebRTC connection established for device: {device_id}")
@@ -275,16 +304,17 @@ def create_enhanced_app() -> FastAPI:
             logger.error(f"Error handling WebRTC offer: {e}")
             raise HTTPException(status_code=500, detail=f"WebRTC offer failed: {str(e)}")
 
-    # Client endpoint for WebRTC connection
-    @app.get("/client",
-             summary="WebRTC client page",
-             description="WebRTC client interface for testing")
-    async def webrtc_client():
-        """WebRTC client interface"""
+    # WebRTC client info endpoint
+    @app.get("/client-info",
+             summary="WebRTC client info",
+             description="Get WebRTC client connection information")
+    async def webrtc_client_info():
+        """Get WebRTC client information"""
         return {
-            "message": "WebRTC client endpoint",
-            "instructions": "Use this endpoint to connect your ESP32 device",
-            "offer_endpoint": "/api/offer"
+            "webrtc_client": "/client",
+            "offer_endpoint": "/api/offer",
+            "instructions": "ESP32 devices should send WebRTC offers to /api/offer",
+            "browser_client": "Open /client in browser for testing"
         }
     
     return app
