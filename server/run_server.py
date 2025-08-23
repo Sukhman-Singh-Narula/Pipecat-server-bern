@@ -9,8 +9,17 @@ import asyncio
 import uvicorn
 import argparse
 import aiohttp
+import site
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
+
+# Use importlib.metadata instead of deprecated pkg_resources
+try:
+    from importlib.metadata import distribution
+except ImportError:
+    # Fallback for Python < 3.8
+    from importlib_metadata import distribution
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -228,11 +237,36 @@ def create_enhanced_app() -> FastAPI:
     # Add WebRTC client interface (mirroring what bot.py does)
     try:
         # Try to find the WebRTC client dist directory in common locations
-        potential_paths = [
-            "/Users/sukhmansinghnarula/.espressif/python_env/idf6.0_py3.13_env/lib/python3.13/site-packages/pipecat_ai_small_webrtc_prebuilt/client/dist",
+        potential_paths = []
+        
+        # Try to find the package location dynamically
+        try:
+            # Method 1: Using importlib.metadata
+            dist = distribution('pipecat-ai-small-webrtc-prebuilt')
+            pkg_location = Path(dist.locate_file('pipecat_ai_small_webrtc_prebuilt'))
+            pkg_path = pkg_location / 'client' / 'dist'
+            potential_paths.append(str(pkg_path))
+        except Exception:
+            pass
+        
+        # Method 2: Check all site-packages directories
+        for site_dir in site.getsitepackages():
+            pkg_path = Path(site_dir) / 'pipecat_ai_small_webrtc_prebuilt' / 'client' / 'dist'
+            potential_paths.append(str(pkg_path))
+        
+        # Method 3: Check user site-packages
+        try:
+            user_site = site.getusersitepackages()
+            pkg_path = Path(user_site) / 'pipecat_ai_small_webrtc_prebuilt' / 'client' / 'dist'
+            potential_paths.append(str(pkg_path))
+        except Exception:
+            pass
+        
+        # Fallback paths
+        potential_paths.extend([
             "./client/dist",
             "../client/dist"
-        ]
+        ])
         
         dist_dir = None
         for path in potential_paths:
@@ -267,25 +301,25 @@ def create_enhanced_app() -> FastAPI:
             
             logger.info(f"Processing WebRTC offer for device: {device_id}")
             
-            # Use the exact same WebRTC creation pattern as working bot.py
+            # Create WebRTC connection and get answer first
             from pipecat.transports.network.webrtc_connection import SmallWebRTCConnection
             from pipecat.runner.utils import _get_transport_params
             
-            # Get transport params for webrtc - exactly like bot.py
+            # Get transport params for webrtc
             transport_params_obj = _get_transport_params("webrtc", transport_params)
             logger.debug(f"Using transport params for webrtc")
             
-            # Create WebRTC connection - exactly like bot.py
+            # Create WebRTC connection
             connection = SmallWebRTCConnection()
             await connection.initialize(offer_data.get("sdp", ""), offer_data.get("type", "offer"))
             
-            # Get the answer - exactly like bot.py
+            # Get the answer immediately - ESP32 expects this
             answer = connection.get_answer()
             
-            # Create transport - exactly like bot.py
+            # Create transport
             transport = SmallWebRTCTransport(connection, transport_params_obj)
             
-            # Create runner args - exactly like bot.py
+            # Create runner args
             from types import SimpleNamespace
             runner_args = SimpleNamespace(
                 transport="webrtc",
@@ -298,7 +332,12 @@ def create_enhanced_app() -> FastAPI:
             asyncio.create_task(run_enhanced_bot(transport, runner_args, device_id))
             
             logger.info(f"WebRTC connection established for device: {device_id}")
-            return answer
+            
+            # Return the WebRTC answer in the format ESP32 expects
+            return {
+                "sdp": answer.get("sdp", ""),
+                "type": "answer"
+            }
                 
         except Exception as e:
             logger.error(f"Error handling WebRTC offer: {e}")
@@ -323,87 +362,85 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
     """Enhanced bot with dynamic system prompts based on user progress"""
     logger.info(f"Starting enhanced bot for device: {device_id}")
 
-    # Create an HTTP session - CRUCIAL for proper TTS operation
-    async with aiohttp.ClientSession() as session:
-        stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-        tts = ElevenLabsHttpTTSService(
-            api_key=os.getenv("ELEVENLABS_API_KEY", ""),
-            voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
-            aiohttp_session=session,
-        )
+    # Use ElevenLabs TTS without aiohttp session - let it manage its own session
+    tts = ElevenLabsHttpTTSService(
+        api_key=os.getenv("ELEVENLABS_API_KEY", ""),
+        voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
+    )
 
-        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
+    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # Get user-specific system prompt based on their progress
-        system_prompt = await get_system_prompt_for_user(device_id) if device_id else get_default_system_prompt()
-        
-        logger.info(f"Using system prompt for device {device_id}: {system_prompt[:100]}...")
+    # Get user-specific system prompt based on their progress
+    system_prompt = await get_system_prompt_for_user(device_id) if device_id else get_default_system_prompt()
+    
+    logger.info(f"Using system prompt for device {device_id}: {system_prompt[:100]}...")
 
-        # Initialize with custom system prompt
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
+    # Initialize with custom system prompt
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt,
+        },
+    ]
+
+    context = OpenAILLMContext(messages)
+    context_aggregator = llm.create_context_aggregator(context)
+
+    pipeline = Pipeline(
+        [
+            transport.input(),  # Transport user input
+            stt,
+            context_aggregator.user(),  # User responses
+            llm,  # LLM
+            tts,  # TTS
+            transport.output(),  # Transport bot output
+            context_aggregator.assistant(),  # Assistant spoken responses
         ]
+    )
 
-        context = OpenAILLMContext(messages)
-        context_aggregator = llm.create_context_aggregator(context)
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            enable_metrics=True,
+            enable_usage_metrics=True,
+        ),
+        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+    )
 
-        pipeline = Pipeline(
-            [
-                transport.input(),  # Transport user input
-                stt,
-                context_aggregator.user(),  # User responses
-                llm,  # LLM
-                tts,  # TTS
-                transport.output(),  # Transport bot output
-                context_aggregator.assistant(),  # Assistant spoken responses
-            ]
-        )
-
-        task = PipelineTask(
-            pipeline,
-            params=PipelineParams(
-                enable_metrics=True,
-                enable_usage_metrics=True,
-            ),
-            idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
-        )
-
-        @transport.event_handler("on_client_connected")
-        async def on_client_connected(transport, client):
-            logger.info(f"Client connected - Device ID: {device_id}")
-            
-            if device_id:
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        logger.info(f"Client connected - Device ID: {device_id}")
+        
+        if device_id:
+            try:
+                # Update user's last active time
+                user_service = get_user_service()
                 try:
-                    # Update user's last active time
-                    user_service = get_user_service()
-                    try:
-                        user_response = await user_service.get_user(device_id)
-                        logger.info(f"User {device_id} reconnected - Season {user_response.season}, Episode {user_response.episode}")
-                        
-                        # Update last active time
-                        await user_service.update_last_active(device_id)
-                        
-                    except UserNotFoundException:
-                        logger.warning(f"Connected device {device_id} not registered")
+                    user_response = await user_service.get_user(device_id)
+                    logger.info(f"User {device_id} reconnected - Season {user_response.season}, Episode {user_response.episode}")
                     
-                except Exception as e:
-                    logger.error(f"Failed to update user info: {e}")
-            
-            # Kick off the conversation with introduction
-            messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-            await task.queue_frames([context_aggregator.user().get_context_frame()])
+                    # Update last active time
+                    await user_service.update_last_active(device_id)
+                    
+                except UserNotFoundException:
+                    logger.warning(f"Connected device {device_id} not registered")
+                
+            except Exception as e:
+                logger.error(f"Failed to update user info: {e}")
+        
+        # Kick off the conversation with introduction
+        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+        await task.queue_frames([context_aggregator.user().get_context_frame()])
 
-        @transport.event_handler("on_client_disconnected")
-        async def on_client_disconnected(transport, client):
-            logger.info(f"Client disconnected - Device ID: {device_id}")
-            await task.cancel()
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        logger.info(f"Client disconnected - Device ID: {device_id}")
+        await task.cancel()
 
-        runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-        await runner.run(task)
+    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+    await runner.run(task)
 
 # Create the enhanced app
 app = create_enhanced_app()
