@@ -1,4 +1,4 @@
-pipecat-ai[webrtc,silero,deepgram,openai,elevenlabs,runner,daily]>=0.0.77
+pipecat-ai[webrtc,silero,deepgram,openai,cartesia,runner,daily]>=0.0.77
 python-dotenv>=1.0.0,<2.0.0
 fastapi>=0.115.6,<0.117.0
 uvicorn>=0.32.0,<1.0.0
@@ -7,3 +7,4 @@ pydantic-settings>=2.0.0
 firebase-admin>=6.0.0
 google-cloud-firestore>=2.0.0
 aiohttp>=3.9.0
+loguru>=0.7.0
