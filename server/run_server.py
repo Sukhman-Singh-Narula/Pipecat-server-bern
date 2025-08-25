@@ -2,44 +2,39 @@
 
 """
 Enhanced Pipecat server with FastAPI, WebRTC, and Firebase integration
+Works exactly like 07-interruptible.py but with dynamic system prompts
 """
 
 import os
 import asyncio
 import uvicorn
 import argparse
-import aiohttp
-import site
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
-from pathlib import Path
-
-# Use importlib.metadata instead of deprecated pkg_resources
-try:
-    from importlib.metadata import distribution
-except ImportError:
-    # Fallback for Python < 3.8
-    from importlib_metadata import distribution
+from typing import Dict, Any, Optional
 
 from dotenv import load_dotenv
 from loguru import logger
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
+# Pipecat imports - exactly like 07-interruptible.py
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.runner.types import RunnerArguments
+from pipecat.runner.utils import create_transport
+from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketParams
 from pipecat.transports.services.daily import DailyParams
-from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
 
 # Import our enhanced functionality
 from config.settings import get_settings, validate_settings
@@ -50,7 +45,11 @@ from utils.exceptions import UserNotFoundException
 
 load_dotenv(override=True)
 
-# Transport configuration
+# Global state for managing active sessions - like 07-interruptible.py
+active_sessions: Dict[str, Any] = {}
+active_transports: Dict[str, BaseTransport] = {}
+
+# Transport params - exactly like 07-interruptible.py
 transport_params = {
     "daily": lambda: DailyParams(
         audio_in_enabled=True,
@@ -66,45 +65,64 @@ transport_params = {
         audio_in_enabled=True,
         audio_out_enabled=True,
         vad_analyzer=SileroVADAnalyzer(),
-    )
+    ),
 }
 
-async def get_system_prompt_for_user(device_id: str) -> str:
-    """Get user-specific system prompt based on their season/episode progress"""
-    if not device_id:
-        return get_default_system_prompt()
-    
+def get_default_system_prompt() -> str:
+    """Default system prompt - exactly like 07-interruptible.py"""
+    return "You are a helpful LLM in a WebRTC call. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way."
+
+async def get_enhanced_system_prompt(device_id: str = None) -> str:
+    """Get enhanced system prompt based on Firebase user data with templating"""
     try:
+        if not device_id:
+            return get_default_system_prompt()
+        
         user_service = get_user_service()
         prompt_service = get_prompt_service()
         
-        # Get user's current season and episode
+        # Get user data from Firebase
         user_response = await user_service.get_user(device_id)
         season = user_response.season
         episode = user_response.episode
+        user_name = getattr(user_response, 'name', 'friend')
+        user_age = getattr(user_response, 'age', 'young learner')
         
-        logger.info(f"User {device_id} is on Season {season}, Episode {episode}")
+        logger.info(f"User {device_id} ({user_name}, age {user_age}) is on Season {season}, Episode {episode}")
         
-        # Get the appropriate system prompt
+        # Get episode-specific prompt
         prompt_response = await prompt_service.get_prompt(season, episode)
         
+        # Template the prompt with user data
         if prompt_response and prompt_response.content:
-            logger.info(f"Found custom prompt for Season {season}, Episode {episode}")
-            return prompt_response.content
+            templated_prompt = prompt_response.content.format(
+                name=user_name,
+                age=user_age,
+                season=season,
+                episode=episode
+            )
+            logger.info(f"Using custom templated prompt for {device_id} - Season {season}, Episode {episode}")
+            return templated_prompt
         else:
-            logger.info(f"No custom prompt found for Season {season}, Episode {episode}, using default")
-            return get_default_system_prompt()
+            # Fallback with user info - enhanced default prompt
+            enhanced_prompt = f"""You are a helpful AI tutor in a WebRTC call with {user_name}, age {user_age}. 
+You are currently on Season {season}, Episode {episode} of their learning journey. 
+Your goal is to provide educational content appropriate for their level in a succinct way. 
+Your output will be converted to audio so don't include special characters in your answers. 
+Respond to what the user said in a creative and helpful way."""
+            logger.info(f"Using enhanced default prompt for {device_id}")
+            return enhanced_prompt
             
     except UserNotFoundException:
         logger.warning(f"User {device_id} not found, using default system prompt")
         return get_default_system_prompt()
     except Exception as e:
-        logger.error(f"Error getting system prompt for user {device_id}: {e}")
+        logger.error(f"Error getting enhanced system prompt for {device_id}: {e}")
         return get_default_system_prompt()
 
-def get_default_system_prompt() -> str:
-    """Default system prompt when no custom prompt is found"""
-    return """You are a helpful LLM in a WebRTC call. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way."""
+async def get_system_prompt_for_user(device_id: str) -> str:
+    """Get user-specific system prompt based on their season/episode progress"""
+    return await get_enhanced_system_prompt(device_id)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -237,36 +255,11 @@ def create_enhanced_app() -> FastAPI:
     # Add WebRTC client interface (mirroring what bot.py does)
     try:
         # Try to find the WebRTC client dist directory in common locations
-        potential_paths = []
-        
-        # Try to find the package location dynamically
-        try:
-            # Method 1: Using importlib.metadata
-            dist = distribution('pipecat-ai-small-webrtc-prebuilt')
-            pkg_location = Path(dist.locate_file('pipecat_ai_small_webrtc_prebuilt'))
-            pkg_path = pkg_location / 'client' / 'dist'
-            potential_paths.append(str(pkg_path))
-        except Exception:
-            pass
-        
-        # Method 2: Check all site-packages directories
-        for site_dir in site.getsitepackages():
-            pkg_path = Path(site_dir) / 'pipecat_ai_small_webrtc_prebuilt' / 'client' / 'dist'
-            potential_paths.append(str(pkg_path))
-        
-        # Method 3: Check user site-packages
-        try:
-            user_site = site.getusersitepackages()
-            pkg_path = Path(user_site) / 'pipecat_ai_small_webrtc_prebuilt' / 'client' / 'dist'
-            potential_paths.append(str(pkg_path))
-        except Exception:
-            pass
-        
-        # Fallback paths
-        potential_paths.extend([
+        potential_paths = [
+            "/Users/sukhmansinghnarula/.espressif/python_env/idf6.0_py3.13_env/lib/python3.13/site-packages/pipecat_ai_small_webrtc_prebuilt/client/dist",
             "./client/dist",
             "../client/dist"
-        ])
+        ]
         
         dist_dir = None
         for path in potential_paths:
@@ -284,84 +277,53 @@ def create_enhanced_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not mount WebRTC client: {e}")
     
-        # Simple WebRTC endpoint that matches the working example exactly
-    @app.post("/api/simple-offer",
-              summary="Simple WebRTC offer handler", 
-              description="Simplified WebRTC handler that matches working examples")
-    async def handle_simple_webrtc_offer(offer_data: dict):
-        """Simplified WebRTC handler that exactly matches working examples"""
-        try:
-            logger.info(f"Received simple WebRTC offer: {offer_data}")
-            
-            # For now, return success - will implement transport creation later
-            logger.info("Simple WebRTC connection initiated (placeholder)")
-            
-            return {"status": "success", "message": "WebRTC initiated"}
-                
-        except Exception as e:
-            logger.error(f"Error in simple WebRTC offer: {e}")
-            raise HTTPException(status_code=500, detail=f"Simple WebRTC failed: {str(e)}")
-
-    # WebRTC offer endpoint for ESP32 devices - using the same approach as working examples
+    # WebRTC offer endpoint - exactly like 07-interruptible.py approach
     @app.post("/api/offer",
               summary="WebRTC offer handler", 
               description="Handle WebRTC offer from ESP32 devices with custom prompts")
-    async def handle_webrtc_offer(offer_data: dict):
-        """Handle WebRTC offer from ESP32 devices with proper answer format"""
+    async def handle_webrtc_offer(request: Request, background_tasks: BackgroundTasks):
+        """Handle WebRTC offers exactly like 07-interruptible.py but with Firebase integration"""
         try:
-            logger.info(f"Received WebRTC offer from ESP32: {offer_data}")
+            body = await request.json()
+            device_id = body.get("device_id") or request.headers.get("X-Device-ID")
             
-            # Extract device_id from offer data if provided
-            device_id = offer_data.get("device_id")
-            if not device_id:
-                # Try to extract from other fields if needed
-                device_id = offer_data.get("metadata", {}).get("device_id")
+            logger.info(f"Received WebRTC offer from device: {device_id}")
             
-            logger.info(f"Processing WebRTC offer for device: {device_id}")
-            
-            # Create WebRTC connection exactly like Pipecat examples
-            from pipecat.transports.network.webrtc_connection import SmallWebRTCConnection
-            from pipecat.runner.utils import _get_transport_params
-            
-            # Get transport params for webrtc
-            transport_params_obj = _get_transport_params("webrtc", transport_params)
-            logger.debug(f"Using transport params for webrtc")
-            
-            # Create WebRTC connection
-            connection = SmallWebRTCConnection()
-            
-            # Initialize connection with offer data
-            await connection.initialize(offer_data.get("sdp", ""), offer_data.get("type", "offer"))
-            
-            # Get the answer - this should contain the proper SDP
-            answer = connection.get_answer()
-            
-            # Create transport
-            transport = SmallWebRTCTransport(connection, transport_params_obj)
-            
-            # Create runner args
-            from types import SimpleNamespace
-            runner_args = SimpleNamespace(
+            # Create runner args - exactly like 07-interruptible.py
+            runner_args = RunnerArguments(
                 transport="webrtc",
-                log_level="info",
+                host="0.0.0.0",
+                port=7860,
                 pipeline_idle_timeout_secs=30,
                 handle_sigint=False
             )
             
-            # Start the simplified bot that works like the example
-            asyncio.create_task(run_simplified_bot(transport, runner_args, device_id))
+            # Store session info
+            session_id = f"webrtc_{device_id or 'unknown'}_{len(active_sessions)}"
+            active_sessions[session_id] = {
+                "device_id": device_id,
+                "created_at": datetime.utcnow(),
+                "status": "connecting",
+                "type": "webrtc"
+            }
             
-            logger.info(f"WebRTC connection established for device: {device_id}")
-            logger.debug(f"Returning WebRTC answer: {answer}")
+            # Start the enhanced bot in background - exactly like 07-interruptible.py flow
+            background_tasks.add_task(enhanced_bot, runner_args, device_id)
             
-            # Return the answer exactly as generated by Pipecat
-            return answer
-                
+            # Update session status
+            active_sessions[session_id]["status"] = "connected"
+            
+            # Return success response for WebRTC
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "device_id": device_id,
+                "message": "WebRTC bot started successfully"
+            }
+            
         except Exception as e:
             logger.error(f"Error handling WebRTC offer: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"WebRTC offer failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     # WebRTC client info endpoint
     @app.get("/client-info",
@@ -378,167 +340,23 @@ def create_enhanced_app() -> FastAPI:
     
     return app
 
-async def run_working_bot(transport: BaseTransport, runner_args: RunnerArguments):
-    """Bot function that exactly matches the working example"""
-    logger.info(f"Starting working bot")
-
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
-
-    tts = ElevenLabsTTSService(
-        api_key=os.getenv("ELEVENLABS_API_KEY", ""),
-        voice_id=os.getenv("ELEVENLABS_VOICE_ID", ""),
-    )
-
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
-
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful LLM in a WebRTC call. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way.",
-        },
-    ]
-
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
-
-    pipeline = Pipeline(
-        [
-            transport.input(),  # Transport user input
-            stt,
-            context_aggregator.user(),  # User responses
-            llm,  # LLM
-            tts,  # TTS
-            transport.output(),  # Transport bot output
-            context_aggregator.assistant(),  # Assistant spoken responses
-        ]
-    )
-
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            enable_metrics=True,
-            enable_usage_metrics=True,
-        ),
-        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
-    )
-
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info(f"Working bot client connected")
-        # Kick off the conversation.
-        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-        await task.queue_frames([context_aggregator.user().get_context_frame()])
-
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info(f"Working bot client disconnected")
-        await task.cancel()
-
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.run(task)
-
-async def run_simplified_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None):
-    """Simplified bot following the exact pattern of the working example"""
-    logger.info(f"Starting simplified bot for device: {device_id}")
-
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
-
-    # Use the exact same TTS service as the working example
-    tts = ElevenLabsTTSService(
-        api_key=os.getenv("ELEVENLABS_API_KEY", ""),
-        voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
-    )
-
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
-
-    # Get user-specific system prompt or use default
-    if device_id:
-        system_prompt = await get_system_prompt_for_user(device_id)
-    else:
-        system_prompt = get_default_system_prompt()
-    
-    logger.info(f"Using system prompt for device {device_id}: {system_prompt[:100]}...")
-
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt,
-        },
-    ]
-
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
-
-    pipeline = Pipeline(
-        [
-            transport.input(),  # Transport user input
-            stt,
-            context_aggregator.user(),  # User responses
-            llm,  # LLM
-            tts,  # TTS
-            transport.output(),  # Transport bot output
-            context_aggregator.assistant(),  # Assistant spoken responses
-        ]
-    )
-
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            enable_metrics=True,
-            enable_usage_metrics=True,
-        ),
-        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
-    )
-
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info(f"Client connected - Device ID: {device_id}")
-        
-        # Update user info if device_id is provided
-        if device_id:
-            try:
-                user_service = get_user_service()
-                try:
-                    user_response = await user_service.get_user(device_id)
-                    logger.info(f"User {device_id} reconnected - Season {user_response.season}, Episode {user_response.episode}")
-                    await user_service.update_last_active(device_id)
-                except UserNotFoundException:
-                    logger.warning(f"Connected device {device_id} not registered")
-            except Exception as e:
-                logger.error(f"Failed to update user info: {e}")
-        
-        # Kick off the conversation - exactly like the working example
-        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-        await task.queue_frames([context_aggregator.user().get_context_frame()])
-
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info(f"Client disconnected - Device ID: {device_id}")
-        await task.cancel()
-
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.run(task)
-
 async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None):
-    """Enhanced bot with dynamic system prompts based on user progress"""
+    """Enhanced bot function - exactly like 07-interruptible.py but with Firebase integration"""
     logger.info(f"Starting enhanced bot for device: {device_id}")
 
+    # Services - exactly like 07-interruptible.py
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-    # Use the same TTS service as the working example
-    tts = ElevenLabsTTSService(
-        api_key=os.getenv("ELEVENLABS_API_KEY", ""),
-        voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
+    tts = CartesiaTTSService(
+        api_key=os.getenv("CARTESIA_API_KEY"),
+        voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
     )
 
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
-    # Get user-specific system prompt based on their progress
-    system_prompt = await get_system_prompt_for_user(device_id) if device_id else get_default_system_prompt()
+    # Get enhanced system prompt based on user data
+    system_prompt = await get_enhanced_system_prompt(device_id)
     
-    logger.info(f"Using system prompt for device {device_id}: {system_prompt[:100]}...")
-
-    # Initialize with custom system prompt
     messages = [
         {
             "role": "system",
@@ -549,6 +367,7 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
     context = OpenAILLMContext(messages)
     context_aggregator = llm.create_context_aggregator(context)
 
+    # Pipeline - exactly like 07-interruptible.py
     pipeline = Pipeline(
         [
             transport.input(),  # Transport user input
@@ -572,36 +391,38 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        logger.info(f"Client connected - Device ID: {device_id}")
-        
+        logger.info(f"Client connected - device: {device_id}")
+        # Update user last seen if device_id provided
         if device_id:
             try:
-                # Update user's last active time
                 user_service = get_user_service()
-                try:
-                    user_response = await user_service.get_user(device_id)
-                    logger.info(f"User {device_id} reconnected - Season {user_response.season}, Episode {user_response.episode}")
-                    
-                    # Update last active time
-                    await user_service.update_last_active(device_id)
-                    
-                except UserNotFoundException:
-                    logger.warning(f"Connected device {device_id} not registered")
-                
+                await user_service.update_last_active(device_id)
             except Exception as e:
-                logger.error(f"Failed to update user info: {e}")
+                logger.warning(f"Failed to update last seen for {device_id}: {e}")
         
-        # Kick off the conversation with introduction
+        # Kick off the conversation - exactly like 07-interruptible.py
         messages.append({"role": "system", "content": "Please introduce yourself to the user."})
         await task.queue_frames([context_aggregator.user().get_context_frame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        logger.info(f"Client disconnected - Device ID: {device_id}")
+        logger.info(f"Client disconnected - device: {device_id}")
+        # Clean up session
+        if device_id and device_id in active_sessions:
+            del active_sessions[device_id]
+        if device_id and device_id in active_transports:
+            del active_transports[device_id]
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+
     await runner.run(task)
+
+async def enhanced_bot(runner_args: RunnerArguments, device_id: str = None):
+    """Enhanced bot entry point - like 07-interruptible.py but with device_id"""
+    transport = await create_transport(runner_args, transport_params)
+    active_transports[device_id or "default"] = transport
+    await run_enhanced_bot(transport, runner_args, device_id)
 
 # Create the enhanced app
 app = create_enhanced_app()
