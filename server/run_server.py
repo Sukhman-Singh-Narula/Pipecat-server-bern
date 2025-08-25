@@ -244,7 +244,7 @@ def create_enhanced_app() -> FastAPI:
                 "prompt_service": "running",
                 "openai": "available" if os.getenv("OPENAI_API_KEY") else "missing",
                 "deepgram": "available" if os.getenv("DEEPGRAM_API_KEY") else "missing",
-                "elevenlabs": "available" if os.getenv("ELEVENLABS_API_KEY") else "missing"
+                "cartesia": "available" if os.getenv("CARTESIA_API_KEY") else "missing"
             }
         }
 
