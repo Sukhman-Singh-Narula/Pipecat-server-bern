@@ -238,8 +238,9 @@ def create_enhanced_app() -> FastAPI:
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "esp32_support": True,
-            "sdp_munging": "enabled",
+            "esp32_mode": ESP32_MODE,
+            "esp32_host": ESP32_HOST if ESP32_MODE else None,
+            "sdp_munging": "enabled" if ESP32_MODE else "disabled",
             "services": {
                 "firebase": "available" if get_firebase_service().use_firebase else "local_storage",
                 "user_service": "running",
@@ -322,15 +323,18 @@ def create_enhanced_app() -> FastAPI:
             answer = webrtc_connection.get_answer()
             
             # Apply ESP32 SDP munging for compatibility - CRUCIAL for ESP32!
-            # Get the host from settings or request
-            host = request.headers.get("Host", "").split(":")[0]
-            if not host or host in ["localhost", "127.0.0.1"]:
-                # Try to get external host from environment or use server host
-                host = os.getenv("SERVER_HOST", "64.227.157.74")  # Your VM IP
-            
-            if host and host not in ["localhost", "127.0.0.1"]:
-                logger.info(f"Applying ESP32 SDP munging for host: {host}")
-                answer["sdp"] = smallwebrtc_sdp_munging(answer["sdp"], host)
+            if ESP32_MODE and ESP32_HOST and ESP32_HOST not in ["localhost", "127.0.0.1"]:
+                logger.info(f"Applying ESP32 SDP munging for host: {ESP32_HOST}")
+                answer["sdp"] = smallwebrtc_sdp_munging(answer["sdp"], ESP32_HOST)
+            else:
+                # Fallback: try to get host from environment or request
+                host = request.headers.get("Host", "").split(":")[0]
+                if not host or host in ["localhost", "127.0.0.1"]:
+                    host = os.getenv("SERVER_HOST", "64.227.157.74")
+                
+                if ESP32_MODE and host and host not in ["localhost", "127.0.0.1"]:
+                    logger.info(f"Applying ESP32 SDP munging for fallback host: {host}")
+                    answer["sdp"] = smallwebrtc_sdp_munging(answer["sdp"], host)
             
             # Start the enhanced bot in background - exactly like 07-interruptible.py flow
             background_tasks.add_task(enhanced_bot, runner_args, device_id)
@@ -453,20 +457,38 @@ async def enhanced_bot(runner_args: RunnerArguments, device_id: str = None):
 # Create the enhanced app
 app = create_enhanced_app()
 
+# Global ESP32 mode flag
+ESP32_MODE = False
+ESP32_HOST = None
+
 def main():
-    parser = argparse.ArgumentParser(description="Enhanced Pipecat Server")
+    global ESP32_MODE, ESP32_HOST
+    
+    parser = argparse.ArgumentParser(description="Enhanced Pipecat Server - 07-interruptible.py Compatible")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=7860, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
     parser.add_argument("--log-level", default="info", help="Log level")
+    parser.add_argument("--esp32", action="store_true", help="Enable ESP32 mode with SDP munging")
     
     args = parser.parse_args()
     
-    print(f"🚀 Starting Enhanced Pipecat Server...")
+    # Set global ESP32 mode
+    ESP32_MODE = args.esp32
+    ESP32_HOST = args.host
+    
+    # Validate ESP32 requirements
+    if args.esp32 and args.host in ["localhost", "127.0.0.1"]:
+        logger.error("For ESP32, you need to specify `--host IP` so we can do SDP munging.")
+        sys.exit(1)
+    
+    print(f"🚀 Starting Enhanced Pipecat Server (07-interruptible.py compatible)...")
     print(f"   Host: {args.host}")
     print(f"   Port: {args.port}")
     print(f"   Log Level: {args.log_level}")
     print(f"   Reload: {args.reload}")
+    if args.esp32:
+        print(f"🤖 ESP32 mode enabled with SDP munging for host: {args.host}")
     
     # Run the server directly
     uvicorn.run(
