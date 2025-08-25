@@ -232,12 +232,14 @@ def create_enhanced_app() -> FastAPI:
     # Health check endpoint
     @app.get("/health",
              summary="Health check",
-             description="Check server health and status")
+             description="Check server health and status with ESP32 support")
     async def health_check():
         """Health check endpoint"""
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
+            "esp32_support": True,
+            "sdp_munging": "enabled",
             "services": {
                 "firebase": "available" if get_firebase_service().use_firebase else "local_storage",
                 "user_service": "running",
@@ -277,12 +279,12 @@ def create_enhanced_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not mount WebRTC client: {e}")
     
-    # WebRTC offer endpoint - exactly like 07-interruptible.py approach
+    # WebRTC offer endpoint - exactly like 07-interruptible.py approach with ESP32 support
     @app.post("/api/offer",
               summary="WebRTC offer handler", 
-              description="Handle WebRTC offer from ESP32 devices with custom prompts")
+              description="Handle WebRTC offer from ESP32 devices with custom prompts and SDP munging")
     async def handle_webrtc_offer(request: Request, background_tasks: BackgroundTasks):
-        """Handle WebRTC offers exactly like 07-interruptible.py but with Firebase integration"""
+        """Handle WebRTC offers exactly like 07-interruptible.py but with Firebase integration and ESP32 support"""
         try:
             body = await request.json()
             device_id = body.get("device_id") or request.headers.get("X-Device-ID")
@@ -307,19 +309,39 @@ def create_enhanced_app() -> FastAPI:
                 "type": "webrtc"
             }
             
+            # Create WebRTC connection with ESP32 support
+            from pipecat.transports.network.webrtc_connection import SmallWebRTCConnection
+            from pipecat.runner.utils import smallwebrtc_sdp_munging
+            
+            # Create connection and get answer
+            webrtc_connection = SmallWebRTCConnection()
+            offer_sdp = body.get("sdp", "")
+            offer_type = body.get("type", "offer")
+            
+            await webrtc_connection.initialize(offer_sdp, offer_type)
+            answer = webrtc_connection.get_answer()
+            
+            # Apply ESP32 SDP munging for compatibility - CRUCIAL for ESP32!
+            # Get the host from settings or request
+            host = request.headers.get("Host", "").split(":")[0]
+            if not host or host in ["localhost", "127.0.0.1"]:
+                # Try to get external host from environment or use server host
+                host = os.getenv("SERVER_HOST", "64.227.157.74")  # Your VM IP
+            
+            if host and host not in ["localhost", "127.0.0.1"]:
+                logger.info(f"Applying ESP32 SDP munging for host: {host}")
+                answer["sdp"] = smallwebrtc_sdp_munging(answer["sdp"], host)
+            
             # Start the enhanced bot in background - exactly like 07-interruptible.py flow
             background_tasks.add_task(enhanced_bot, runner_args, device_id)
             
             # Update session status
             active_sessions[session_id]["status"] = "connected"
             
-            # Return success response for WebRTC
-            return {
-                "status": "success",
-                "session_id": session_id,
-                "device_id": device_id,
-                "message": "WebRTC bot started successfully"
-            }
+            logger.info(f"WebRTC connection established for ESP32 device: {device_id}")
+            
+            # Return the munged SDP answer for ESP32 compatibility
+            return answer
             
         except Exception as e:
             logger.error(f"Error handling WebRTC offer: {e}")
