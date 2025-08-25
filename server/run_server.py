@@ -27,7 +27,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.runner.types import RunnerArguments
+from pipecat.runner.types import RunnerArguments, SmallWebRTCRunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.cartesia.tts import CartesiaHttpTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
@@ -292,15 +292,6 @@ def create_enhanced_app() -> FastAPI:
             
             logger.info(f"Received WebRTC offer from device: {device_id}")
             
-            # Create runner args - exactly like 07-interruptible.py
-            runner_args = RunnerArguments(
-                transport="webrtc",
-                host="0.0.0.0",
-                port=7860,
-                pipeline_idle_timeout_secs=30,
-                handle_sigint=False
-            )
-            
             # Store session info
             session_id = f"webrtc_{device_id or 'unknown'}_{len(active_sessions)}"
             active_sessions[session_id] = {
@@ -310,9 +301,10 @@ def create_enhanced_app() -> FastAPI:
                 "type": "webrtc"
             }
             
-            # Create WebRTC connection with ESP32 support
+            # Create WebRTC connection with ESP32 support - like the working examples
             from pipecat.transports.network.webrtc_connection import SmallWebRTCConnection
             from pipecat.runner.utils import smallwebrtc_sdp_munging
+            from pipecat.runner.types import SmallWebRTCRunnerArguments
             
             # Create connection and get answer
             webrtc_connection = SmallWebRTCConnection()
@@ -336,8 +328,13 @@ def create_enhanced_app() -> FastAPI:
                     logger.info(f"Applying ESP32 SDP munging for fallback host: {host}")
                     answer["sdp"] = smallwebrtc_sdp_munging(answer["sdp"], host)
             
-            # Start the enhanced bot in background - exactly like 07-interruptible.py flow
-            background_tasks.add_task(enhanced_bot, runner_args, device_id)
+            # Create proper runner args for SmallWebRTC
+            runner_args = SmallWebRTCRunnerArguments(webrtc_connection=webrtc_connection)
+            runner_args.handle_sigint = False
+            runner_args.pipeline_idle_timeout_secs = 30
+            
+            # Start the enhanced bot in background - exactly like working examples
+            background_tasks.add_task(enhanced_bot_webrtc, runner_args, device_id)
             
             # Update session status
             active_sessions[session_id]["status"] = "connected"
@@ -452,6 +449,23 @@ async def enhanced_bot(runner_args: RunnerArguments, device_id: str = None):
     """Enhanced bot entry point - like 07-interruptible.py but with device_id"""
     transport = await create_transport(runner_args, transport_params)
     active_transports[device_id or "default"] = transport
+    await run_enhanced_bot(transport, runner_args, device_id)
+
+async def enhanced_bot_webrtc(runner_args: SmallWebRTCRunnerArguments, device_id: str = None):
+    """Enhanced bot entry point for WebRTC connections with Firebase integration"""
+    from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
+    from pipecat.runner.utils import _get_transport_params
+    
+    # Get transport params for webrtc - exactly like working examples
+    transport_params_obj = _get_transport_params("webrtc", transport_params)
+    
+    # Create WebRTC transport from connection
+    transport = SmallWebRTCTransport(runner_args.webrtc_connection, transport_params_obj)
+    
+    # Store in active transports
+    active_transports[device_id or "default"] = transport
+    
+    # Run the enhanced bot with WebRTC transport
     await run_enhanced_bot(transport, runner_args, device_id)
 
 # Create the enhanced app
