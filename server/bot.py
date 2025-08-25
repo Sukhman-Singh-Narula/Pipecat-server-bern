@@ -5,6 +5,7 @@
 #
 
 import os
+
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -42,27 +43,21 @@ transport_params = {
         audio_in_enabled=True,
         audio_out_enabled=True,
         vad_analyzer=SileroVADAnalyzer(),
-    )
+    ),
 }
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
-    """Core bot logic for Pipecat Cloud compatibility"""
     logger.info(f"Starting bot")
 
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-    # Debug: Check if API key is loaded
-    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
-    logger.info(f"Cartesia API key loaded: {cartesia_api_key[:10] if cartesia_api_key else 'None'}...")
-
     tts = CartesiaHttpTTSService(
-        api_key=cartesia_api_key,
+        api_key=os.getenv("CARTESIA_API_KEY"),
         voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
     )
 
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
-    # Default system prompt for basic functionality
     messages = [
         {
             "role": "system",
@@ -97,7 +92,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected")
-        # Kick off the conversation
+        # Kick off the conversation.
         messages.append({"role": "system", "content": "Please introduce yourself to the user."})
         await task.queue_frames([context_aggregator.user().get_context_frame()])
 
@@ -107,15 +102,15 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.run(task)
 
+    await runner.run(task)
 
 async def bot(runner_args: RunnerArguments):
     """Main bot entry point compatible with Pipecat Cloud."""
     transport = await create_transport(runner_args, transport_params)
     await run_bot(transport, runner_args)
 
-
 if __name__ == "__main__":
     from pipecat.runner.run import main
+
     main()
