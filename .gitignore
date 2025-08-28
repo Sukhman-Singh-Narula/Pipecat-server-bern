@@ -64,3 +64,6 @@ local_prompts.json
 
 # Server temporary files
 server.log
+# Never commit service account JSON
+*firebase-credentials*.json
+*.service-account.json

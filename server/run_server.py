@@ -76,27 +76,138 @@ def get_default_system_prompt() -> str:
     return "You are a helpful LLM in a WebRTC call. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way."
 
 async def get_enhanced_system_prompt(device_id: str = None) -> str:
-    """Get enhanced system prompt based on Firebase user data with templating"""
-    try:
-        if not device_id:
-            return get_default_system_prompt()
-        
-        firebase_service = FirebaseService()
-        
-        # For now, return default prompt since we've restructured the data models
-        # This can be enhanced later to work with the new enhanced user and episode models
-        enhanced_prompt = f"""You are a helpful AI tutor in a WebRTC call. 
-Your goal is to provide educational content appropriate for the learner's level in a succinct way. 
-Your output will be converted to audio so don't include special characters in your answers. 
-Respond to what the user said in a creative and helpful way."""
-        logger.info(f"Using enhanced default prompt for {device_id}")
-        return enhanced_prompt
-            
-    except Exception as e:
-        logger.warning(f"Could not get enhanced prompt for {device_id}: {e}, using default system prompt")
+    """Get enhanced system prompt based on user data from Firebase"""
+    
+    if not device_id:
         return get_default_system_prompt()
+    
+    try:
+        # Get Firebase service
+        from services.firebase_service import get_firebase_service
+        
+        firebase_service = get_firebase_service()
+        
+        # Get user document directly using device_id as document ID
+        user_doc = await firebase_service.get_document("users", device_id)
+        
+        if user_doc:
+            # Extract user data from document
+            name = user_doc.get('name', 'Student')
+            age = user_doc.get('age', 10)
+            progress = user_doc.get('progress', {})
+            
+            # Get current season and episode
+            season = progress.get('season', 1)
+            episode = progress.get('episode', 1)
+            episodes_completed = progress.get('episodes_completed', 0)
+            words_learnt = progress.get('words_learnt', [])
+            topics_learnt = progress.get('topics_learnt', [])
+            
+            logger.info(f"Found user for device {device_id}: {name} (age {age}, Season {season}, Episode {episode})")
+            
+            # Try different system prompt document ID formats
+            system_prompt_id_formats = [
+                f"season_{season}_episode_{episode}",
+                f"s{season}e{episode}",
+                f"{season}_{episode}",
+                f"season{season}_episode{episode}"
+            ]
+            
+            system_prompt_doc = None
+            for prompt_id in system_prompt_id_formats:
+                prompt_doc = await firebase_service.get_document("system_prompts", prompt_id)
+                if prompt_doc:
+                    system_prompt_doc = prompt_doc
+                    logger.info(f"Found system prompt with ID: {prompt_id}")
+                    break
+            
+            if system_prompt_doc:
+                # Extract system prompt data
+                title = system_prompt_doc.get('title', f'Season {season} Episode {episode}')
+                content = system_prompt_doc.get('content', '')
+                learning_objectives = system_prompt_doc.get('learning_objectives', [])
+                words_to_teach = system_prompt_doc.get('words_to_teach', [])
+                topics_to_cover = system_prompt_doc.get('topics_to_cover', [])
+                difficulty_level = system_prompt_doc.get('difficulty_level', 'beginner')
+                
+                # Create enhanced system prompt with user context
+                enhanced_prompt = f"""You are a friendly AI tutor helping {name} (age {age}) learn English.
+
+Current Episode: {title}
+Learning Level: {difficulty_level}
+Learning Objectives: {', '.join(learning_objectives) if learning_objectives else 'General English conversation'}
+Words to Teach: {', '.join(words_to_teach) if words_to_teach else 'Context-appropriate vocabulary'}
+Topics to Cover: {', '.join(topics_to_cover) if topics_to_cover else 'General conversation topics'}
+
+Episode Content:
+{content}
+
+Student Context:
+- Name: {name}
+- Age: {age}
+- Device ID: {device_id}
+- Current Progress: Season {season}, Episode {episode}
+- Episodes Completed: {episodes_completed}
+- Words Already Learned: {len(words_learnt)} words ({', '.join(words_learnt[-5:]) if words_learnt else 'none yet'})
+- Topics Already Covered: {len(topics_learnt)} topics ({', '.join(topics_learnt[-3:]) if topics_learnt else 'none yet'})
+
+Remember to:
+- Use age-appropriate language for a {age}-year-old
+- Focus on teaching these specific words: {', '.join(words_to_teach) if words_to_teach else 'vocabulary that comes up naturally'}
+- Cover these topics naturally in conversation: {', '.join(topics_to_cover) if topics_to_cover else 'topics of interest to the student'}
+- Build on {name}'s previous learning (they've completed {episodes_completed} episodes)
+- Keep conversations engaging and interactive
+- Provide gentle corrections and encouragement
+- Adapt to {name}'s learning pace and interests
+- Your output will be converted to audio, so avoid special characters
+
+Start the conversation by greeting {name} warmly and beginning the lesson content."""
+                
+                logger.info(f"Created enhanced system prompt for {name} - Length: {len(enhanced_prompt)} characters")
+                return enhanced_prompt
+            
+            else:
+                # No system prompt found, but we have user data
+                logger.warning(f"No system prompt found for Season {season}, Episode {episode}. Using user-specific fallback.")
+                
+                return f"""You are a friendly AI tutor helping {name} (age {age}) learn English.
+
+Current Progress: Season {season}, Episode {episode}
+Previous Learning: {name} has completed {episodes_completed} episodes and learned {len(words_learnt)} words.
+
+Since no specific lesson content is available, please:
+- Greet {name} warmly by name
+- Review some of the words they've learned: {', '.join(words_learnt[-5:]) if words_learnt else 'basic vocabulary'}
+- Have a conversation appropriate for a {age}-year-old
+- Introduce some new age-appropriate vocabulary
+- Keep the lesson engaging and interactive
+- Provide gentle corrections and encouragement
+- Your output will be converted to audio, so avoid special characters
+
+Start by asking {name} how they're feeling today and what they'd like to talk about."""
+        
+        else:
+            logger.warning(f"No user document found for device {device_id}")
+            # Fallback to device-specific but generic prompt
+            return f"""You are a friendly AI tutor helping a student learn English.
+
+Device: {device_id}
+
+Please introduce yourself and start a conversational English lesson.
+
+Remember to:
+- Use simple, clear language
+- Be encouraging and patient
+- Ask questions to keep the conversation interactive
+- Provide gentle corrections when needed
+- Make learning fun and engaging
+- Your output will be converted to audio, so avoid special characters
+
+Start by asking the student their name and what they'd like to learn about today."""
+    
     except Exception as e:
-        logger.error(f"Error getting enhanced system prompt for {device_id}: {e}")
+        logger.error(f"Error creating enhanced system prompt for {device_id}: {e}")
+        # Ultimate fallback
         return get_default_system_prompt()
 
 async def get_system_prompt_for_user(device_id: str) -> str:
@@ -345,84 +456,153 @@ def create_enhanced_app() -> FastAPI:
 async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None):
     """Enhanced bot function - exactly like 07-interruptible.py but with Firebase integration"""
     logger.info(f"Starting enhanced bot for device: {device_id}")
-
-    # Services - exactly like 07-interruptible.py
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
-
-    # Debug: Check if API key is loaded
-    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
-    logger.info(f"Cartesia API key loaded: {cartesia_api_key[:10] if cartesia_api_key else 'None'}...")
-
-    tts = CartesiaHttpTTSService(
-        api_key=cartesia_api_key,
-        voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
-    )
-
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
-
-    # Get enhanced system prompt based on user data
-    system_prompt = await get_enhanced_system_prompt(device_id)
     
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt,
-        },
-    ]
-
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
-
-    # Pipeline - exactly like 07-interruptible.py
-    pipeline = Pipeline(
-        [
-            transport.input(),  # Transport user input
-            stt,
-            context_aggregator.user(),  # User responses
-            llm,  # LLM
-            tts,  # TTS
-            transport.output(),  # Transport bot output
-            context_aggregator.assistant(),  # Assistant spoken responses
-        ]
-    )
-
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            enable_metrics=True,
-            enable_usage_metrics=True,
-        ),
-        idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
-    )
-
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info(f"Client connected - device: {device_id}")
-        # Update user last seen if device_id provided  
+    conversation_id = None
+    user = None
+    firebase_service = None
+    
+    try:
+        # Initialize conversation tracking if device_id is provided
         if device_id:
-            try:
-                # For now, just log the connection - user service integration can be added later
-                logger.info(f"Device {device_id} connected and active")
-            except Exception as e:
-                logger.warning(f"Failed to update last seen for {device_id}: {e}")
-        
-        # Kick off the conversation - exactly like 07-interruptible.py
-        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-        await task.queue_frames([context_aggregator.user().get_context_frame()])
+            from services.firebase_service import get_firebase_service
+            from services.enhanced_user_service import EnhancedUserService
+            from services.conversation_service import ConversationService
+            
+            firebase_service = get_firebase_service()
+            user_service = EnhancedUserService(firebase_service)
+            conversation_service = ConversationService(firebase_service)
+            
+            # Get user and start conversation session
+            user = await user_service.get_user_by_device_id(device_id)
+            if user:
+                # Start a conversation session
+                conversation_id = f"{user.email}_{user.progress.season}_{user.progress.episode}_{int(datetime.utcnow().timestamp())}"
+                
+                from models.conversation import ConversationTranscript
+                transcript = ConversationTranscript(
+                    conversation_id=conversation_id,
+                    user_email=user.email,
+                    season=user.progress.season,
+                    episode=user.progress.episode
+                )
+                
+                await firebase_service.set_document(
+                    "conversation_transcripts",
+                    conversation_id,
+                    transcript.to_dict()
+                )
+                
+                logger.info(f"Started conversation session {conversation_id} for user {user.email}")
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info(f"Client disconnected - device: {device_id}")
-        # Clean up session
+        # Services - exactly like 07-interruptible.py
+        stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+
+        # Debug: Check if API key is loaded
+        cartesia_api_key = os.getenv("CARTESIA_API_KEY")
+        logger.info(f"Cartesia API key loaded: {cartesia_api_key[:10] if cartesia_api_key else 'None'}...")
+
+        tts = CartesiaHttpTTSService(
+            api_key=cartesia_api_key,
+            voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
+        )
+
+        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
+
+        # Get enhanced system prompt based on user data
+        system_prompt = await get_enhanced_system_prompt(device_id)
+        
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+        ]
+
+        context = OpenAILLMContext(messages)
+        context_aggregator = llm.create_context_aggregator(context)
+
+        # Pipeline - exactly like 07-interruptible.py
+        pipeline = Pipeline(
+            [
+                transport.input(),  # Transport user input
+                stt,
+                context_aggregator.user(),  # User responses
+                llm,  # LLM
+                tts,  # TTS
+                transport.output(),  # Transport bot output
+                context_aggregator.assistant(),  # Assistant spoken responses
+            ]
+        )
+
+        task = PipelineTask(
+            pipeline,
+            params=PipelineParams(
+                enable_metrics=True,
+                enable_usage_metrics=True,
+            ),
+            idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+        )
+
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, client):
+            logger.info(f"Client connected - device: {device_id}")
+            # Update user last seen if device_id provided  
+            if device_id:
+                try:
+                    # For now, just log the connection - user service integration can be added later
+                    logger.info(f"Device {device_id} connected and active")
+                except Exception as e:
+                    logger.warning(f"Failed to update last seen for {device_id}: {e}")
+            
+            # Kick off the conversation - exactly like 07-interruptible.py
+            messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+            await task.queue_frames([context_aggregator.user().get_context_frame()])
+
+        @transport.event_handler("on_client_disconnected")
+        async def on_client_disconnected(transport, client):
+            logger.info(f"Client disconnected - device: {device_id}")
+            
+            # Finalize conversation session if it exists
+            if device_id and conversation_id and firebase_service:
+                try:
+                    # Get conversation transcript and create summary
+                    transcript_doc = await firebase_service.get_document("conversation_transcripts", conversation_id)
+                    if transcript_doc:
+                        conversation_messages = []
+                        for msg in messages[1:]:  # Skip system prompt
+                            conversation_messages.append(msg)
+                        
+                        # Update transcript with conversation messages
+                        transcript_doc['messages'] = conversation_messages
+                        transcript_doc['ended_at'] = datetime.utcnow().isoformat()
+                        
+                        await firebase_service.update_document("conversation_transcripts", conversation_id, transcript_doc)
+                        
+                        # Update user progress if appropriate
+                        if user:
+                            logger.info(f"Conversation {conversation_id} completed for user {user.email}")
+                            # TODO: Add logic to determine if episode was completed and update progress
+                            
+                except Exception as e:
+                    logger.error(f"Failed to finalize conversation {conversation_id}: {e}")
+            
+            # Clean up session
+            if device_id and device_id in active_sessions:
+                del active_sessions[device_id]
+            if device_id and device_id in active_transports:
+                del active_transports[device_id]
+            await task.cancel()
+
+        runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+        await runner.run(task)
+        
+    except Exception as e:
+        logger.error(f"Error in enhanced bot: {e}")
         if device_id and device_id in active_sessions:
             del active_sessions[device_id]
         if device_id and device_id in active_transports:
             del active_transports[device_id]
-        await task.cancel()
-
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-
-    await runner.run(task)
+        raise
 
 async def enhanced_bot(runner_args: RunnerArguments, device_id: str = None):
     """Enhanced bot entry point - like 07-interruptible.py but with device_id"""
