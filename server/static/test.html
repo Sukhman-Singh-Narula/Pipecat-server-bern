@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 WebRTC Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+        .logs {
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .audio-controls {
+            margin-top: 20px;
+        }
+        audio {
+            width: 100%;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ESP32 WebRTC Test Client</h1>
+        <p>Test WebRTC connection with device ID support for ESP32 integration</p>
+        
+        <div class="form-group">
+            <label for="deviceId">Device ID:</label>
+            <input type="text" id="deviceId" value="ESPX3001" placeholder="Enter device ID (e.g., ESPX3001)">
+        </div>
+        
+        <div class="form-group">
+            <label for="serverUrl">Server URL:</label>
+            <input type="text" id="serverUrl" value="/api/offer" placeholder="/api/offer">
+        </div>
+        
+        <div class="form-group">
+            <button id="connectBtn" onclick="startConnection()">Connect</button>
+            <button id="disconnectBtn" onclick="stopConnection()" disabled>Disconnect</button>
+            <button id="testMicBtn" onclick="testMicrophone()">Test Microphone</button>
+        </div>
+        
+        <div class="audio-controls">
+            <audio id="remoteAudio" autoplay playsinline controls></audio>
+            <div>
+                <label>Local Audio Level: <span id="audioLevel">-</span></label>
+            </div>
+        </div>
+        
+        <div id="status" class="status info">Ready to connect</div>
+        
+        <div class="logs" id="logs"></div>
+    </div>
+
+    <script>
+        let peerConnection = null;
+        let localStream = null;
+        let isConnected = false;
+
+        function log(message) {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            logs.innerHTML += `[${timestamp}] ${message}\n`;
+            logs.scrollTop = logs.scrollHeight;
+            console.log(message);
+        }
+
+        function updateStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+
+        async function testMicrophone() {
+            try {
+                updateStatus('Testing microphone...', 'info');
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { 
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true 
+                    }, 
+                    video: false 
+                });
+                
+                log('Microphone access granted');
+                
+                // Test audio level
+                const audioContext = new AudioContext();
+                const source = audioContext.createMediaStreamSource(stream);
+                const analyser = audioContext.createAnalyser();
+                source.connect(analyser);
+                
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                
+                function checkLevel() {
+                    analyser.getByteFrequencyData(dataArray);
+                    const level = Math.max(...dataArray);
+                    document.getElementById('audioLevel').textContent = level;
+                    
+                    if (level > 0) {
+                        setTimeout(checkLevel, 100);
+                    }
+                }
+                
+                checkLevel();
+                updateStatus('Microphone working! Speak to see audio level.', 'success');
+                
+                // Stop stream after test
+                setTimeout(() => {
+                    stream.getTracks().forEach(track => track.stop());
+                    audioContext.close();
+                    updateStatus('Microphone test completed', 'info');
+                }, 5000);
+                
+            } catch (error) {
+                log(`Microphone test failed: ${error.message}`);
+                updateStatus('Microphone test failed. Please check permissions.', 'error');
+            }
+        }
+
+        async function startConnection() {
+            try {
+                const deviceId = document.getElementById('deviceId').value.trim();
+                const serverUrl = document.getElementById('serverUrl').value.trim();
+                
+                if (!deviceId) {
+                    alert('Please enter a device ID');
+                    return;
+                }
+                
+                updateStatus('Starting connection...', 'info');
+                log(`Starting WebRTC connection for device: ${deviceId}`);
+                
+                // Get user media
+                log('Requesting microphone access...');
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { 
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    }, 
+                    video: false 
+                });
+                
+                log('Microphone access granted');
+                
+                // Create peer connection
+                peerConnection = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' }
+                    ]
+                });
+                
+                // Add local stream
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                    log(`Added ${track.kind} track`);
+                });
+                
+                // Handle remote stream
+                peerConnection.ontrack = (event) => {
+                    log('Received remote track');
+                    const remoteAudio = document.getElementById('remoteAudio');
+                    remoteAudio.srcObject = event.streams[0];
+                };
+                
+                // Handle ICE candidates
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        log(`ICE candidate: ${event.candidate.type}`);
+                    } else {
+                        log('ICE gathering complete');
+                    }
+                };
+                
+                // Handle connection state changes
+                peerConnection.onconnectionstatechange = () => {
+                    log(`Connection state: ${peerConnection.connectionState}`);
+                    updateStatus(`Connection: ${peerConnection.connectionState}`, 
+                        peerConnection.connectionState === 'connected' ? 'success' : 'info');
+                };
+                
+                // Create offer
+                log('Creating offer...');
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                // Send offer to server
+                log('Sending offer to server...');
+                const response = await fetch(serverUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Device-ID': deviceId
+                    },
+                    body: JSON.stringify({
+                        sdp: offer.sdp,
+                        type: offer.type,
+                        device_id: deviceId
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server responded with ${response.status}`);
+                }
+                
+                const answer = await response.json();
+                log('Received answer from server');
+                
+                // Set remote description
+                await peerConnection.setRemoteDescription({
+                    type: answer.type,
+                    sdp: answer.sdp
+                });
+                
+                isConnected = true;
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                
+                updateStatus('Connected! You can now speak.', 'success');
+                log('WebRTC connection established successfully');
+                
+            } catch (error) {
+                log(`Connection failed: ${error.message}`);
+                updateStatus(`Connection failed: ${error.message}`, 'error');
+                stopConnection();
+            }
+        }
+
+        function stopConnection() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            
+            isConnected = false;
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            
+            updateStatus('Disconnected', 'info');
+            log('Connection stopped');
+        }
+
+        // Initialize
+        log('ESP32 WebRTC Test Client loaded');
+        updateStatus('Ready to connect', 'info');
+    </script>
+</body>
+</html>

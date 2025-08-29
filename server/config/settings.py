@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     
     # Firebase configuration
     firebase_credentials_path: str = Field(
-        default="firebase-credentials.json", 
+        default="./firebase-credentials.json", 
         env="FIREBASE_CREDENTIALS_PATH"
     )
     

@@ -11,14 +11,14 @@ import uvicorn
 import argparse
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from dotenv import load_dotenv
 from loguru import logger
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 # Pipecat imports - exactly like 07-interruptible.py
@@ -370,6 +370,286 @@ def create_enhanced_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not mount WebRTC client: {e}")
     
+    # Add test page for ESP32 debugging
+    @app.get("/test", response_class=HTMLResponse)
+    async def test_page():
+        """Serve ESP32 WebRTC test page"""
+        return HTMLResponse(content="""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 WebRTC Test - Fixed</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input, button { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; }
+        button { background: #007bff; color: white; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .status { padding: 10px; border-radius: 5px; margin: 10px 0; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        #audioLevel { width: 100%; height: 20px; background: #f0f0f0; border: 1px solid #ccc; margin-top: 10px; }
+        #audioLevelBar { height: 100%; background: #4CAF50; width: 0%; transition: width 0.1s; }
+        .logs { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ ESP32 WebRTC Test Client</h1>
+        <p>This page tests WebRTC connections to debug ESP32 communication issues.</p>
+        
+        <div class="form-group">
+            <label for="deviceId">ESP32 Device ID:</label>
+            <input type="text" id="deviceId" value="ESPX3001" placeholder="Enter your ESP32 device ID">
+        </div>
+        
+        <div class="form-group">
+            <button onclick="testMicrophone()">🎤 Test Microphone Access</button>
+            <div id="audioLevel">
+                <div id="audioLevelBar"></div>
+            </div>
+            <small>Audio level indicator (speak to test microphone)</small>
+        </div>
+        
+        <div class="form-group">
+            <button onclick="connectWebRTC()" id="connectBtn">🔗 Start WebRTC Connection</button>
+            <button onclick="disconnect()" id="disconnectBtn" disabled>❌ Disconnect</button>
+        </div>
+        
+        <div id="status"></div>
+        
+        <h3>📋 Connection Logs:</h3>
+        <div id="logs" class="logs"></div>
+    </div>
+
+    <script>
+        let pc = null;
+        let localStream = null;
+        let audioContext = null;
+        let analyser = null;
+        let microphone = null;
+        let connected = false;
+
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.style.color = type === 'error' ? 'red' : type === 'success' ? 'green' : type === 'warning' ? 'orange' : 'black';
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            logs.appendChild(logEntry);
+            logs.scrollTop = logs.scrollHeight;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.innerHTML = `<div class="${type}">${message}</div>`;
+        }
+
+        async function testMicrophone() {
+            try {
+                log('Testing microphone access...', 'info');
+                
+                // Request microphone permission with better constraints
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 48000
+                    }
+                });
+
+                log('✅ Microphone access granted!', 'success');
+                showStatus('✅ Microphone access successful! Audio level monitoring started.', 'success');
+
+                // Set up audio level monitoring
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                
+                microphone.connect(analyser);
+                analyser.fftSize = 256;
+                
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                function updateAudioLevel() {
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for (let i = 0; i < bufferLength; i++) {
+                        sum += dataArray[i];
+                    }
+                    const average = sum / bufferLength;
+                    const percentage = (average / 255) * 100;
+                    
+                    document.getElementById('audioLevelBar').style.width = percentage + '%';
+                    
+                    if (!connected) {
+                        requestAnimationFrame(updateAudioLevel);
+                    }
+                }
+                updateAudioLevel();
+
+                // Store stream for WebRTC
+                localStream = stream;
+                
+            } catch (error) {
+                log(`❌ Microphone access failed: ${error.message}`, 'error');
+                showStatus(`❌ Microphone access denied: ${error.message}`, 'error');
+            }
+        }
+
+        async function connectWebRTC() {
+            const deviceId = document.getElementById('deviceId').value.trim();
+            if (!deviceId) {
+                showStatus('❌ Please enter a device ID', 'error');
+                return;
+            }
+
+            if (!localStream) {
+                showStatus('❌ Please test microphone first', 'error');
+                return;
+            }
+
+            try {
+                document.getElementById('connectBtn').disabled = true;
+                log(`Starting WebRTC connection for device: ${deviceId}`, 'info');
+
+                // Create peer connection with proper configuration
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' }
+                    ]
+                });
+
+                // Add local stream
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                    log(`Added ${track.kind} track to peer connection`, 'info');
+                });
+
+                // Handle remote stream
+                pc.ontrack = (event) => {
+                    log(`Received remote ${event.track.kind} track`, 'success');
+                    if (event.track.kind === 'audio') {
+                        const audio = document.createElement('audio');
+                        audio.srcObject = event.streams[0];
+                        audio.autoplay = true;
+                        audio.controls = true;
+                        document.body.appendChild(audio);
+                        log('✅ Audio element created for bot speech', 'success');
+                    }
+                };
+
+                // Handle ICE candidates
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        log(`ICE candidate: ${event.candidate.candidate}`, 'info');
+                    } else {
+                        log('All ICE candidates have been sent', 'info');
+                    }
+                };
+
+                pc.onconnectionstatechange = () => {
+                    log(`Connection state: ${pc.connectionState}`, 'info');
+                    if (pc.connectionState === 'connected') {
+                        connected = true;
+                        showStatus('✅ WebRTC connection established!', 'success');
+                        document.getElementById('disconnectBtn').disabled = false;
+                    } else if (pc.connectionState === 'failed') {
+                        showStatus('❌ WebRTC connection failed', 'error');
+                        disconnect();
+                    }
+                };
+
+                // Create offer
+                const offer = await pc.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: false
+                });
+                
+                await pc.setLocalDescription(offer);
+                log('Created and set local offer', 'info');
+
+                // Send offer to server with device ID
+                const response = await fetch('/api/offer', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Device-ID': deviceId
+                    },
+                    body: JSON.stringify({
+                        device_id: deviceId,
+                        type: 'offer',
+                        sdp: offer.sdp
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const answer = await response.json();
+                log('Received answer from server', 'success');
+
+                await pc.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: answer.sdp
+                }));
+                
+                log('✅ WebRTC handshake completed!', 'success');
+                showStatus('🔄 Connecting... Check for audio from the AI assistant.', 'info');
+
+            } catch (error) {
+                log(`❌ WebRTC connection failed: ${error.message}`, 'error');
+                showStatus(`❌ Connection failed: ${error.message}`, 'error');
+                document.getElementById('connectBtn').disabled = false;
+            }
+        }
+
+        function disconnect() {
+            if (pc) {
+                pc.close();
+                pc = null;
+                log('WebRTC connection closed', 'info');
+            }
+            
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+                log('Local media stream stopped', 'info');
+            }
+
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
+            connected = false;
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            document.getElementById('audioLevelBar').style.width = '0%';
+            showStatus('Connection closed', 'info');
+        }
+
+        // Auto-test microphone on page load
+        window.addEventListener('load', () => {
+            log('🚀 ESP32 WebRTC Test Client loaded', 'info');
+            log('Click "Test Microphone Access" first, then "Start WebRTC Connection"', 'info');
+        });
+    </script>
+</body>
+</html>
+        """)
+    
     # WebRTC offer endpoint - exactly like 07-interruptible.py approach with ESP32 support
     @app.post("/api/offer",
               summary="WebRTC offer handler", 
@@ -378,7 +658,14 @@ def create_enhanced_app() -> FastAPI:
         """Handle WebRTC offers exactly like 07-interruptible.py but with Firebase integration and ESP32 support"""
         try:
             body = await request.json()
-            device_id = body.get("device_id") or request.headers.get("X-Device-ID")
+            
+            # Extract device ID from multiple sources
+            device_id = (
+                body.get("device_id") or 
+                request.headers.get("X-Device-ID") or
+                request.query_params.get("device_id") or
+                None
+            )
             
             logger.info(f"Received WebRTC offer from device: {device_id}")
             
@@ -386,7 +673,7 @@ def create_enhanced_app() -> FastAPI:
             session_id = f"webrtc_{device_id or 'unknown'}_{len(active_sessions)}"
             active_sessions[session_id] = {
                 "device_id": device_id,
-                "created_at": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
                 "status": "connecting",
                 "type": "webrtc"
             }
@@ -421,7 +708,7 @@ def create_enhanced_app() -> FastAPI:
             # Create proper runner args for SmallWebRTC
             runner_args = SmallWebRTCRunnerArguments(webrtc_connection=webrtc_connection)
             runner_args.handle_sigint = False
-            runner_args.pipeline_idle_timeout_secs = 30
+            runner_args.pipeline_idle_timeout_secs = 60  # Increased timeout for better stability
             
             # Start the enhanced bot in background - exactly like working examples
             background_tasks.add_task(enhanced_bot_webrtc, runner_args, device_id)
@@ -476,7 +763,7 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
             user = await user_service.get_user_by_device_id(device_id)
             if user:
                 # Start a conversation session
-                conversation_id = f"{user.email}_{user.progress.season}_{user.progress.episode}_{int(datetime.utcnow().timestamp())}"
+                conversation_id = f"{user.email}_{user.progress.season}_{user.progress.episode}_{int(datetime.now(timezone.utc).timestamp())}"
                 
                 from models.conversation import ConversationTranscript
                 transcript = ConversationTranscript(
@@ -574,7 +861,7 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
                         
                         # Update transcript with conversation messages
                         transcript_doc['messages'] = conversation_messages
-                        transcript_doc['ended_at'] = datetime.utcnow().isoformat()
+                        transcript_doc['ended_at'] = datetime.now(timezone.utc).isoformat()
                         
                         await firebase_service.update_document("conversation_transcripts", conversation_id, transcript_doc)
                         
