@@ -759,18 +759,22 @@ def create_enhanced_app() -> FastAPI:
             answer = webrtc_connection.get_answer()
             
             # Apply ESP32 SDP munging for compatibility - CRUCIAL for ESP32!
-            if ESP32_MODE and ESP32_HOST and ESP32_HOST not in ["localhost", "127.0.0.1"]:
+            if ESP32_MODE and ESP32_HOST and ESP32_HOST not in ["localhost", "127.0.0.1", "0.0.0.0"]:
                 logger.info(f"Applying ESP32 SDP munging for host: {ESP32_HOST}")
                 answer["sdp"] = smallwebrtc_sdp_munging(answer["sdp"], ESP32_HOST)
             else:
                 # Fallback: try to get host from environment or request
                 host = request.headers.get("Host", "").split(":")[0]
-                if not host or host in ["localhost", "127.0.0.1"]:
+                if not host or host in ["localhost", "127.0.0.1", "0.0.0.0"]:
                     host = os.getenv("SERVER_HOST", "64.227.157.74")
                 
-                if ESP32_MODE and host and host not in ["localhost", "127.0.0.1"]:
+                if ESP32_MODE and host and host not in ["localhost", "127.0.0.1", "0.0.0.0"]:
                     logger.info(f"Applying ESP32 SDP munging for fallback host: {host}")
                     answer["sdp"] = smallwebrtc_sdp_munging(answer["sdp"], host)
+                elif ESP32_MODE:
+                    # If we're in ESP32 mode but don't have a valid host, disable SDP munging
+                    logger.warning(f"ESP32 mode enabled but no valid host found (current: {host}). Skipping SDP munging.")
+                    logger.info("Consider starting server with: --host 64.227.157.74 --esp32")
             
             # Create proper runner args for SmallWebRTC
             runner_args = SmallWebRTCRunnerArguments(webrtc_connection=webrtc_connection)
