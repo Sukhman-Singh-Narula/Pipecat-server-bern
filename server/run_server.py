@@ -10,6 +10,7 @@ import asyncio
 import uvicorn
 import argparse
 import sys
+import importlib.util
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -349,26 +350,92 @@ def create_enhanced_app() -> FastAPI:
     try:
         # Try to find the WebRTC client dist directory in common locations
         potential_paths = [
+            # ESP-IDF environment paths
             "/Users/sukhmansinghnarula/.espressif/python_env/idf6.0_py3.13_env/lib/python3.13/site-packages/pipecat_ai_small_webrtc_prebuilt/client/dist",
+            # Standard Python package paths for your server environment
+            "/root/Pipecat-server-bern/venv/lib/python3.12/site-packages/pipecat_ai_small_webrtc_prebuilt/client/dist",
+            "/usr/local/lib/python3.12/site-packages/pipecat_ai_small_webrtc_prebuilt/client/dist",
+            # Try to find via site-packages dynamically
+            f"{sys.prefix}/lib/python3.12/site-packages/pipecat_ai_small_webrtc_prebuilt/client/dist",
+            f"{sys.prefix}/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/pipecat_ai_small_webrtc_prebuilt/client/dist",
+            # Local paths
             "./client/dist",
-            "../client/dist"
+            "../client/dist",
+            "./static/client",
+            "../static/client"
         ]
+        
+        # Try to get path from importlib (Python 3.9+)
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec('pipecat_ai_small_webrtc_prebuilt')
+            if spec and spec.origin:
+                pkg_dir = os.path.dirname(spec.origin)
+                client_path = os.path.join(pkg_dir, 'client', 'dist')
+                potential_paths.insert(0, client_path)
+                logger.info(f"Added importlib-detected path: {client_path}")
+        except Exception as e:
+            logger.warning(f"Could not detect package path via importlib: {e}")
+            pass
         
         dist_dir = None
         for path in potential_paths:
-            if Path(path).exists():
-                dist_dir = path
+            abs_path = os.path.abspath(path)
+            if Path(abs_path).exists():
+                dist_dir = abs_path
+                logger.info(f"Found WebRTC client dist directory at: {dist_dir}")
                 break
         
         if dist_dir:
-            logger.info(f"Found WebRTC client dist directory at: {dist_dir}")
             app.mount("/client", StaticFiles(directory=dist_dir, html=True), name="webrtc_client")
             logger.info("✅ WebRTC client interface mounted at /client")
         else:
             logger.warning("WebRTC client dist directory not found in any expected location")
+            logger.info("Available paths checked:")
+            for path in potential_paths:
+                exists = "✅" if Path(path).exists() else "❌"
+                logger.info(f"  {exists} {path}")
+            
+            # Create a fallback /client endpoint that redirects to /test
+            @app.get("/client", response_class=HTMLResponse)
+            async def client_fallback():
+                return HTMLResponse(content="""
+                <!DOCTYPE html>
+                <html>
+                <head><title>WebRTC Client - Redirecting</title></head>
+                <body>
+                    <h1>WebRTC Client</h1>
+                    <p>The official WebRTC client is not available. Redirecting to test client...</p>
+                    <script>
+                        setTimeout(() => {
+                            window.location.href = '/test';
+                        }, 2000);
+                    </script>
+                    <p><a href="/test">Click here if not redirected automatically</a></p>
+                </body>
+                </html>
+                """)
+            logger.info("✅ Created fallback /client endpoint redirecting to /test")
             
     except Exception as e:
         logger.warning(f"Could not mount WebRTC client: {e}")
+        
+        # Create a fallback /client endpoint even on error
+        @app.get("/client", response_class=HTMLResponse)
+        async def client_error_fallback():
+            return HTMLResponse(content="""
+            <!DOCTYPE html>
+            <html>
+            <head><title>WebRTC Client - Error</title></head>
+            <body>
+                <h1>WebRTC Client Error</h1>
+                <p>Could not load the official WebRTC client interface.</p>
+                <p><a href="/test">Use the ESP32 test client instead</a></p>
+                <p><a href="/docs">View API documentation</a></p>
+            </body>
+            </html>
+            """)
+        logger.info("✅ Created error fallback /client endpoint")
     
     # Add test page for ESP32 debugging
     @app.get("/test", response_class=HTMLResponse)
