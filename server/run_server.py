@@ -387,8 +387,348 @@ def create_enhanced_app() -> FastAPI:
                 break
         
         if dist_dir:
-            app.mount("/client", StaticFiles(directory=dist_dir, html=True), name="webrtc_client")
-            logger.info("✅ WebRTC client interface mounted at /client")
+            # Mount the official WebRTC client at /client/original for reference
+            app.mount("/client/original", StaticFiles(directory=dist_dir, html=True), name="webrtc_client_original")
+            logger.info("✅ Original WebRTC client interface mounted at /client/original")
+            
+            # Create our custom prompt client as the main /client endpoint
+            @app.get("/client", response_class=HTMLResponse)
+            async def client_with_custom_prompts():
+                return HTMLResponse(content="""
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>AI Voice Assistant - Custom Prompts</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+                        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                        .form-group { margin-bottom: 20px; }
+                        label { display: block; margin-bottom: 5px; font-weight: bold; color: #333; }
+                        input, textarea, button { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; }
+                        textarea { min-height: 120px; resize: vertical; font-family: inherit; }
+                        button { background: #007bff; color: white; cursor: pointer; margin-top: 10px; border: none; }
+                        button:hover { background: #0056b3; }
+                        button:disabled { background: #ccc; cursor: not-allowed; }
+                        .status { padding: 12px; border-radius: 5px; margin: 15px 0; }
+                        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+                        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+                        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+                        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+                        #audioLevel { width: 100%; height: 25px; background: #f0f0f0; border: 1px solid #ccc; border-radius: 5px; margin-top: 10px; }
+                        #audioLevelBar { height: 100%; background: linear-gradient(90deg, #28a745, #ffc107, #dc3545); width: 0%; transition: width 0.1s; border-radius: 5px; }
+                        .logs { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; height: 200px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }
+                        .preset-prompts { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; }
+                        .preset-btn { background: #6c757d; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; }
+                        .preset-btn:hover { background: #5a6268; }
+                        .header { text-align: center; margin-bottom: 30px; }
+                        .header h1 { color: #007bff; margin-bottom: 10px; }
+                        .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+                        @media (max-width: 768px) { .two-column { grid-template-columns: 1fr; } }
+                        .note { background: #e7f3ff; border: 1px solid #bee5eb; border-radius: 5px; padding: 10px; margin-bottom: 20px; font-size: 14px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="header">
+                            <h1>🎙️ AI Voice Assistant - Custom Prompts</h1>
+                            <p>Customize your AI's personality and test voice conversations</p>
+                        </div>
+                        
+                        <div class="note">
+                            <strong>✨ Enhanced Version:</strong> This client supports custom system prompts. For the original WebRTC client, visit <a href="/client/original">/client/original</a>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="deviceId">Device ID (Optional):</label>
+                            <input type="text" id="deviceId" value="CUSTOM_CLIENT" placeholder="Enter device identifier">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="systemPrompt">AI System Prompt:</label>
+                            <div class="preset-prompts">
+                                <button class="preset-btn" onclick="loadPreset('teacher')">👩‍🏫 Teacher</button>
+                                <button class="preset-btn" onclick="loadPreset('friend')">😊 Friend</button>
+                                <button class="preset-btn" onclick="loadPreset('coach')">💪 Coach</button>
+                                <button class="preset-btn" onclick="loadPreset('assistant')">🤖 Assistant</button>
+                                <button class="preset-btn" onclick="loadPreset('storyteller')">📚 Storyteller</button>
+                            </div>
+                            <textarea id="systemPrompt" placeholder="Enter your custom system prompt here...">You are a helpful AI assistant in a voice conversation. Respond naturally and conversationally. Keep your responses concise since they will be spoken aloud. Be friendly, helpful, and engaging.</textarea>
+                        </div>
+                        
+                        <div class="two-column">
+                            <div>
+                                <div class="form-group">
+                                    <button onclick="testMicrophone()">🎤 Test Microphone</button>
+                                    <div id="audioLevel">
+                                        <div id="audioLevelBar"></div>
+                                    </div>
+                                    <small>Speak to see audio levels</small>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="form-group">
+                                    <button onclick="connectWebRTC()" id="connectBtn">🔗 Start Voice Chat</button>
+                                    <button onclick="disconnect()" id="disconnectBtn" disabled>❌ Stop Chat</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div id="status"></div>
+                        
+                        <h3>📋 Connection Logs:</h3>
+                        <div id="logs" class="logs"></div>
+                    </div>
+
+                    <script>
+                        let pc = null;
+                        let localStream = null;
+                        let audioContext = null;
+                        let analyser = null;
+                        let microphone = null;
+                        let connected = false;
+
+                        const presetPrompts = {
+                            teacher: "You are a friendly and patient teacher having a voice conversation with a student. Explain concepts clearly, ask engaging questions, and provide encouragement. Keep responses educational but conversational since they will be spoken aloud.",
+                            friend: "You are a warm, supportive friend having a casual voice chat. Be empathetic, ask follow-up questions, share appropriate stories or experiences, and keep the conversation light and engaging. Respond naturally as if talking to a close friend.",
+                            coach: "You are an enthusiastic life coach and motivator in a voice conversation. Be encouraging, ask powerful questions, help the person think through challenges, and provide actionable advice. Keep your energy positive and inspiring.",
+                            assistant: "You are a professional AI assistant in a voice conversation. Be helpful, efficient, and informative while maintaining a friendly tone. Provide clear, actionable responses and ask clarifying questions when needed.",
+                            storyteller: "You are a captivating storyteller sharing tales through voice. Create engaging narratives, use vivid descriptions, vary your pacing for dramatic effect, and invite the listener into the story. Make it interactive by asking what they'd like to hear about."
+                        };
+
+                        function loadPreset(type) {
+                            document.getElementById('systemPrompt').value = presetPrompts[type];
+                            log(`Loaded ${type} preset prompt`, 'info');
+                        }
+
+                        function log(message, type = 'info') {
+                            const logs = document.getElementById('logs');
+                            const timestamp = new Date().toLocaleTimeString();
+                            const logEntry = document.createElement('div');
+                            logEntry.style.color = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : type === 'warning' ? '#ffc107' : '#007bff';
+                            logEntry.textContent = `[${timestamp}] ${message}`;
+                            logs.appendChild(logEntry);
+                            logs.scrollTop = logs.scrollHeight;
+                            console.log(`[${type.toUpperCase()}] ${message}`);
+                        }
+
+                        function showStatus(message, type) {
+                            const status = document.getElementById('status');
+                            status.innerHTML = `<div class="${type}">${message}</div>`;
+                        }
+
+                        async function testMicrophone() {
+                            try {
+                                log('Requesting microphone access...', 'info');
+                                
+                                const stream = await navigator.mediaDevices.getUserMedia({
+                                    audio: {
+                                        echoCancellation: true,
+                                        noiseSuppression: true,
+                                        autoGainControl: true,
+                                        sampleRate: 48000
+                                    }
+                                });
+
+                                log('✅ Microphone access granted!', 'success');
+                                showStatus('✅ Microphone ready! Speak to test audio levels.', 'success');
+
+                                // Set up audio level monitoring
+                                audioContext = new AudioContext();
+                                analyser = audioContext.createAnalyser();
+                                microphone = audioContext.createMediaStreamSource(stream);
+                                
+                                microphone.connect(analyser);
+                                analyser.fftSize = 256;
+                                
+                                const bufferLength = analyser.frequencyBinCount;
+                                const dataArray = new Uint8Array(bufferLength);
+
+                                function updateAudioLevel() {
+                                    analyser.getByteFrequencyData(dataArray);
+                                    let sum = 0;
+                                    for (let i = 0; i < bufferLength; i++) {
+                                        sum += dataArray[i];
+                                    }
+                                    const average = sum / bufferLength;
+                                    const percentage = Math.min((average / 128) * 100, 100);
+                                    
+                                    document.getElementById('audioLevelBar').style.width = percentage + '%';
+                                    
+                                    if (!connected) {
+                                        requestAnimationFrame(updateAudioLevel);
+                                    }
+                                }
+                                updateAudioLevel();
+
+                                localStream = stream;
+                                
+                            } catch (error) {
+                                log(`❌ Microphone access failed: ${error.message}`, 'error');
+                                showStatus(`❌ Microphone access denied. Please allow microphone permissions and try again.`, 'error');
+                            }
+                        }
+
+                        async function connectWebRTC() {
+                            const deviceId = document.getElementById('deviceId').value.trim() || 'CUSTOM_CLIENT';
+                            const systemPrompt = document.getElementById('systemPrompt').value.trim();
+                            
+                            if (!systemPrompt) {
+                                showStatus('❌ Please enter a system prompt', 'error');
+                                return;
+                            }
+
+                            if (!localStream) {
+                                showStatus('❌ Please test microphone first', 'error');
+                                return;
+                            }
+
+                            try {
+                                document.getElementById('connectBtn').disabled = true;
+                                log(`Starting voice chat with device: ${deviceId}`, 'info');
+                                log(`Using custom system prompt (${systemPrompt.length} characters)`, 'info');
+
+                                pc = new RTCPeerConnection({
+                                    iceServers: [
+                                        { urls: 'stun:stun.l.google.com:19302' },
+                                        { urls: 'stun:stun1.l.google.com:19302' }
+                                    ]
+                                });
+
+                                localStream.getTracks().forEach(track => {
+                                    pc.addTrack(track, localStream);
+                                    log(`Added ${track.kind} track`, 'info');
+                                });
+
+                                pc.ontrack = (event) => {
+                                    log(`Received ${event.track.kind} from AI`, 'success');
+                                    if (event.track.kind === 'audio') {
+                                        const audio = document.createElement('audio');
+                                        audio.srcObject = event.streams[0];
+                                        audio.autoplay = true;
+                                        audio.style.display = 'none';
+                                        document.body.appendChild(audio);
+                                        log('🔊 AI voice channel ready', 'success');
+                                    }
+                                };
+
+                                pc.onicecandidate = (event) => {
+                                    if (event.candidate) {
+                                        log(`ICE: ${event.candidate.candidate.split(' ')[7] || 'candidate'}`, 'info');
+                                    }
+                                };
+
+                                pc.onconnectionstatechange = () => {
+                                    log(`Connection: ${pc.connectionState}`, 'info');
+                                    if (pc.connectionState === 'connected') {
+                                        connected = true;
+                                        showStatus('✅ Voice chat connected! Start speaking to the AI.', 'success');
+                                        document.getElementById('disconnectBtn').disabled = false;
+                                    } else if (pc.connectionState === 'failed') {
+                                        showStatus('❌ Connection failed. Try again.', 'error');
+                                        disconnect();
+                                    }
+                                };
+
+                                const offer = await pc.createOffer({
+                                    offerToReceiveAudio: true,
+                                    offerToReceiveVideo: false
+                                });
+                                
+                                await pc.setLocalDescription(offer);
+                                log('Created WebRTC offer', 'info');
+
+                                const response = await fetch('/api/offer', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-Device-ID': deviceId,
+                                        'X-Custom-Prompt': 'true'
+                                    },
+                                    body: JSON.stringify({
+                                        device_id: deviceId,
+                                        type: 'offer',
+                                        sdp: offer.sdp,
+                                        custom_system_prompt: systemPrompt
+                                    })
+                                });
+
+                                if (!response.ok) {
+                                    throw new Error(`Server error: ${response.status}`);
+                                }
+
+                                const answer = await response.json();
+                                log('Received server response', 'success');
+
+                                await pc.setRemoteDescription(new RTCSessionDescription({
+                                    type: 'answer',
+                                    sdp: answer.sdp
+                                }));
+                                
+                                log('WebRTC handshake completed', 'success');
+                                showStatus('🔄 Connecting... The AI will introduce itself shortly.', 'info');
+
+                            } catch (error) {
+                                log(`❌ Connection failed: ${error.message}`, 'error');
+                                showStatus(`❌ Connection failed: ${error.message}`, 'error');
+                                document.getElementById('connectBtn').disabled = false;
+                            }
+                        }
+
+                        function disconnect() {
+                            if (pc) {
+                                pc.close();
+                                pc = null;
+                                log('WebRTC connection closed', 'info');
+                            }
+                            
+                            if (localStream) {
+                                localStream.getTracks().forEach(track => track.stop());
+                                localStream = null;
+                                log('Microphone stopped', 'info');
+                            }
+
+                            if (audioContext) {
+                                audioContext.close();
+                                audioContext = null;
+                            }
+
+                            connected = false;
+                            document.getElementById('connectBtn').disabled = false;
+                            document.getElementById('disconnectBtn').disabled = true;
+                            document.getElementById('audioLevelBar').style.width = '0%';
+                            showStatus('Voice chat disconnected', 'info');
+                        }
+
+                        // Load default preset on page load
+                        window.addEventListener('load', () => {
+                            log('🚀 AI Voice Assistant with Custom Prompts ready', 'info');
+                            log('1. Choose a preset or write custom prompt', 'info');
+                            log('2. Test microphone', 'info');
+                            log('3. Start voice chat', 'info');
+                        });
+                    </script>
+                </body>
+                </html>
+                """)
+            logger.info("✅ Custom prompt client interface created as main /client endpoint")
+            
+            # Also add the /client/custom endpoint for consistency
+            @app.get("/client/custom", response_class=HTMLResponse)
+            async def client_custom():
+                return HTMLResponse(content="""
+                <!DOCTYPE html>
+                <html>
+                <head><title>Redirecting to Custom Client</title></head>
+                <body>
+                    <h1>Redirecting...</h1>
+                    <p>The custom prompt client is now available at <a href="/client">/client</a></p>
+                    <script>window.location.href = '/client';</script>
+                </body>
+                </html>
+                """)
+            logger.info("✅ /client/custom redirects to main custom client")
         else:
             logger.warning("WebRTC client dist directory not found in any expected location")
             logger.info("Available paths checked:")
@@ -396,26 +736,323 @@ def create_enhanced_app() -> FastAPI:
                 exists = "✅" if Path(path).exists() else "❌"
                 logger.info(f"  {exists} {path}")
             
-            # Create a fallback /client endpoint that redirects to /test
+            # Create a custom /client endpoint with system prompt input
             @app.get("/client", response_class=HTMLResponse)
             async def client_fallback():
                 return HTMLResponse(content="""
                 <!DOCTYPE html>
-                <html>
-                <head><title>WebRTC Client - Redirecting</title></head>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>AI Voice Assistant - Custom Prompts</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+                        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                        .form-group { margin-bottom: 20px; }
+                        label { display: block; margin-bottom: 5px; font-weight: bold; color: #333; }
+                        input, textarea, button { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; }
+                        textarea { min-height: 120px; resize: vertical; font-family: inherit; }
+                        button { background: #007bff; color: white; cursor: pointer; margin-top: 10px; border: none; }
+                        button:hover { background: #0056b3; }
+                        button:disabled { background: #ccc; cursor: not-allowed; }
+                        .status { padding: 12px; border-radius: 5px; margin: 15px 0; }
+                        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+                        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+                        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+                        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+                        #audioLevel { width: 100%; height: 25px; background: #f0f0f0; border: 1px solid #ccc; border-radius: 5px; margin-top: 10px; }
+                        #audioLevelBar { height: 100%; background: linear-gradient(90deg, #28a745, #ffc107, #dc3545); width: 0%; transition: width 0.1s; border-radius: 5px; }
+                        .logs { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; height: 200px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }
+                        .preset-prompts { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; }
+                        .preset-btn { background: #6c757d; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; }
+                        .preset-btn:hover { background: #5a6268; }
+                        .header { text-align: center; margin-bottom: 30px; }
+                        .header h1 { color: #007bff; margin-bottom: 10px; }
+                        .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+                        @media (max-width: 768px) { .two-column { grid-template-columns: 1fr; } }
+                    </style>
+                </head>
                 <body>
-                    <h1>WebRTC Client</h1>
-                    <p>The official WebRTC client is not available. Redirecting to test client...</p>
+                    <div class="container">
+                        <div class="header">
+                            <h1>🎙️ AI Voice Assistant</h1>
+                            <p>Customize your AI's personality and test voice conversations</p>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="deviceId">Device ID (Optional):</label>
+                            <input type="text" id="deviceId" value="CUSTOM_CLIENT" placeholder="Enter device identifier">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="systemPrompt">AI System Prompt:</label>
+                            <div class="preset-prompts">
+                                <button class="preset-btn" onclick="loadPreset('teacher')">👩‍🏫 Teacher</button>
+                                <button class="preset-btn" onclick="loadPreset('friend')">😊 Friend</button>
+                                <button class="preset-btn" onclick="loadPreset('coach')">💪 Coach</button>
+                                <button class="preset-btn" onclick="loadPreset('assistant')">🤖 Assistant</button>
+                                <button class="preset-btn" onclick="loadPreset('storyteller')">📚 Storyteller</button>
+                            </div>
+                            <textarea id="systemPrompt" placeholder="Enter your custom system prompt here...">You are a helpful AI assistant in a voice conversation. Respond naturally and conversationally. Keep your responses concise since they will be spoken aloud. Be friendly, helpful, and engaging.</textarea>
+                        </div>
+                        
+                        <div class="two-column">
+                            <div>
+                                <div class="form-group">
+                                    <button onclick="testMicrophone()">🎤 Test Microphone</button>
+                                    <div id="audioLevel">
+                                        <div id="audioLevelBar"></div>
+                                    </div>
+                                    <small>Speak to see audio levels</small>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="form-group">
+                                    <button onclick="connectWebRTC()" id="connectBtn">🔗 Start Voice Chat</button>
+                                    <button onclick="disconnect()" id="disconnectBtn" disabled>❌ Stop Chat</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div id="status"></div>
+                        
+                        <h3>📋 Connection Logs:</h3>
+                        <div id="logs" class="logs"></div>
+                    </div>
+
                     <script>
-                        setTimeout(() => {
-                            window.location.href = '/test';
-                        }, 2000);
+                        let pc = null;
+                        let localStream = null;
+                        let audioContext = null;
+                        let analyser = null;
+                        let microphone = null;
+                        let connected = false;
+
+                        const presetPrompts = {
+                            teacher: "You are a friendly and patient teacher having a voice conversation with a student. Explain concepts clearly, ask engaging questions, and provide encouragement. Keep responses educational but conversational since they will be spoken aloud.",
+                            friend: "You are a warm, supportive friend having a casual voice chat. Be empathetic, ask follow-up questions, share appropriate stories or experiences, and keep the conversation light and engaging. Respond naturally as if talking to a close friend.",
+                            coach: "You are an enthusiastic life coach and motivator in a voice conversation. Be encouraging, ask powerful questions, help the person think through challenges, and provide actionable advice. Keep your energy positive and inspiring.",
+                            assistant: "You are a professional AI assistant in a voice conversation. Be helpful, efficient, and informative while maintaining a friendly tone. Provide clear, actionable responses and ask clarifying questions when needed.",
+                            storyteller: "You are a captivating storyteller sharing tales through voice. Create engaging narratives, use vivid descriptions, vary your pacing for dramatic effect, and invite the listener into the story. Make it interactive by asking what they'd like to hear about."
+                        };
+
+                        function loadPreset(type) {
+                            document.getElementById('systemPrompt').value = presetPrompts[type];
+                            log(`Loaded ${type} preset prompt`, 'info');
+                        }
+
+                        function log(message, type = 'info') {
+                            const logs = document.getElementById('logs');
+                            const timestamp = new Date().toLocaleTimeString();
+                            const logEntry = document.createElement('div');
+                            logEntry.style.color = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : type === 'warning' ? '#ffc107' : '#007bff';
+                            logEntry.textContent = `[${timestamp}] ${message}`;
+                            logs.appendChild(logEntry);
+                            logs.scrollTop = logs.scrollHeight;
+                            console.log(`[${type.toUpperCase()}] ${message}`);
+                        }
+
+                        function showStatus(message, type) {
+                            const status = document.getElementById('status');
+                            status.innerHTML = `<div class="${type}">${message}</div>`;
+                        }
+
+                        async function testMicrophone() {
+                            try {
+                                log('Requesting microphone access...', 'info');
+                                
+                                const stream = await navigator.mediaDevices.getUserMedia({
+                                    audio: {
+                                        echoCancellation: true,
+                                        noiseSuppression: true,
+                                        autoGainControl: true,
+                                        sampleRate: 48000
+                                    }
+                                });
+
+                                log('✅ Microphone access granted!', 'success');
+                                showStatus('✅ Microphone ready! Speak to test audio levels.', 'success');
+
+                                // Set up audio level monitoring
+                                audioContext = new AudioContext();
+                                analyser = audioContext.createAnalyser();
+                                microphone = audioContext.createMediaStreamSource(stream);
+                                
+                                microphone.connect(analyser);
+                                analyser.fftSize = 256;
+                                
+                                const bufferLength = analyser.frequencyBinCount;
+                                const dataArray = new Uint8Array(bufferLength);
+
+                                function updateAudioLevel() {
+                                    analyser.getByteFrequencyData(dataArray);
+                                    let sum = 0;
+                                    for (let i = 0; i < bufferLength; i++) {
+                                        sum += dataArray[i];
+                                    }
+                                    const average = sum / bufferLength;
+                                    const percentage = Math.min((average / 128) * 100, 100);
+                                    
+                                    document.getElementById('audioLevelBar').style.width = percentage + '%';
+                                    
+                                    if (!connected) {
+                                        requestAnimationFrame(updateAudioLevel);
+                                    }
+                                }
+                                updateAudioLevel();
+
+                                localStream = stream;
+                                
+                            } catch (error) {
+                                log(`❌ Microphone access failed: ${error.message}`, 'error');
+                                showStatus(`❌ Microphone access denied. Please allow microphone permissions and try again.`, 'error');
+                            }
+                        }
+
+                        async function connectWebRTC() {
+                            const deviceId = document.getElementById('deviceId').value.trim() || 'CUSTOM_CLIENT';
+                            const systemPrompt = document.getElementById('systemPrompt').value.trim();
+                            
+                            if (!systemPrompt) {
+                                showStatus('❌ Please enter a system prompt', 'error');
+                                return;
+                            }
+
+                            if (!localStream) {
+                                showStatus('❌ Please test microphone first', 'error');
+                                return;
+                            }
+
+                            try {
+                                document.getElementById('connectBtn').disabled = true;
+                                log(`Starting voice chat with device: ${deviceId}`, 'info');
+                                log(`Using custom system prompt (${systemPrompt.length} characters)`, 'info');
+
+                                pc = new RTCPeerConnection({
+                                    iceServers: [
+                                        { urls: 'stun:stun.l.google.com:19302' },
+                                        { urls: 'stun:stun1.l.google.com:19302' }
+                                    ]
+                                });
+
+                                localStream.getTracks().forEach(track => {
+                                    pc.addTrack(track, localStream);
+                                    log(`Added ${track.kind} track`, 'info');
+                                });
+
+                                pc.ontrack = (event) => {
+                                    log(`Received ${event.track.kind} from AI`, 'success');
+                                    if (event.track.kind === 'audio') {
+                                        const audio = document.createElement('audio');
+                                        audio.srcObject = event.streams[0];
+                                        audio.autoplay = true;
+                                        audio.style.display = 'none';
+                                        document.body.appendChild(audio);
+                                        log('🔊 AI voice channel ready', 'success');
+                                    }
+                                };
+
+                                pc.onicecandidate = (event) => {
+                                    if (event.candidate) {
+                                        log(`ICE: ${event.candidate.candidate.split(' ')[7] || 'candidate'}`, 'info');
+                                    }
+                                };
+
+                                pc.onconnectionstatechange = () => {
+                                    log(`Connection: ${pc.connectionState}`, 'info');
+                                    if (pc.connectionState === 'connected') {
+                                        connected = true;
+                                        showStatus('✅ Voice chat connected! Start speaking to the AI.', 'success');
+                                        document.getElementById('disconnectBtn').disabled = false;
+                                    } else if (pc.connectionState === 'failed') {
+                                        showStatus('❌ Connection failed. Try again.', 'error');
+                                        disconnect();
+                                    }
+                                };
+
+                                const offer = await pc.createOffer({
+                                    offerToReceiveAudio: true,
+                                    offerToReceiveVideo: false
+                                });
+                                
+                                await pc.setLocalDescription(offer);
+                                log('Created WebRTC offer', 'info');
+
+                                const response = await fetch('/api/offer', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-Device-ID': deviceId,
+                                        'X-Custom-Prompt': 'true'
+                                    },
+                                    body: JSON.stringify({
+                                        device_id: deviceId,
+                                        type: 'offer',
+                                        sdp: offer.sdp,
+                                        custom_system_prompt: systemPrompt
+                                    })
+                                });
+
+                                if (!response.ok) {
+                                    throw new Error(`Server error: ${response.status}`);
+                                }
+
+                                const answer = await response.json();
+                                log('Received server response', 'success');
+
+                                await pc.setRemoteDescription(new RTCSessionDescription({
+                                    type: 'answer',
+                                    sdp: answer.sdp
+                                }));
+                                
+                                log('WebRTC handshake completed', 'success');
+                                showStatus('🔄 Connecting... The AI will introduce itself shortly.', 'info');
+
+                            } catch (error) {
+                                log(`❌ Connection failed: ${error.message}`, 'error');
+                                showStatus(`❌ Connection failed: ${error.message}`, 'error');
+                                document.getElementById('connectBtn').disabled = false;
+                            }
+                        }
+
+                        function disconnect() {
+                            if (pc) {
+                                pc.close();
+                                pc = null;
+                                log('WebRTC connection closed', 'info');
+                            }
+                            
+                            if (localStream) {
+                                localStream.getTracks().forEach(track => track.stop());
+                                localStream = null;
+                                log('Microphone stopped', 'info');
+                            }
+
+                            if (audioContext) {
+                                audioContext.close();
+                                audioContext = null;
+                            }
+
+                            connected = false;
+                            document.getElementById('connectBtn').disabled = false;
+                            document.getElementById('disconnectBtn').disabled = true;
+                            document.getElementById('audioLevelBar').style.width = '0%';
+                            showStatus('Voice chat disconnected', 'info');
+                        }
+
+                        // Load default preset on page load
+                        window.addEventListener('load', () => {
+                            log('🚀 AI Voice Assistant ready', 'info');
+                            log('1. Choose a preset or write custom prompt', 'info');
+                            log('2. Test microphone', 'info');
+                            log('3. Start voice chat', 'info');
+                        });
                     </script>
-                    <p><a href="/test">Click here if not redirected automatically</a></p>
                 </body>
                 </html>
                 """)
-            logger.info("✅ Created fallback /client endpoint redirecting to /test")
+            logger.info("✅ Created custom /client endpoint with system prompt input")
             
     except Exception as e:
         logger.warning(f"Could not mount WebRTC client: {e}")
@@ -717,6 +1354,355 @@ def create_enhanced_app() -> FastAPI:
 </html>
         """)
     
+    # Add a completely new custom prompt client at /prompt-client
+    @app.get("/prompt-client", response_class=HTMLResponse)
+    async def prompt_client():
+        """Serve custom prompt WebRTC client"""
+        return HTMLResponse(content="""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Voice Assistant - Custom System Prompts</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; color: #333; }
+        input, textarea, button { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; box-sizing: border-box; }
+        textarea { min-height: 120px; resize: vertical; font-family: inherit; }
+        button { background: #007bff; color: white; cursor: pointer; margin-top: 10px; border: none; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .status { padding: 12px; border-radius: 5px; margin: 15px 0; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        #audioLevel { width: 100%; height: 25px; background: #f0f0f0; border: 1px solid #ccc; border-radius: 5px; margin-top: 10px; }
+        #audioLevelBar { height: 100%; background: linear-gradient(90deg, #28a745, #ffc107, #dc3545); width: 0%; transition: width 0.1s; border-radius: 5px; }
+        .logs { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; height: 200px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }
+        .preset-prompts { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; }
+        .preset-btn { background: #6c757d; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; width: auto; }
+        .preset-btn:hover { background: #5a6268; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { color: #007bff; margin-bottom: 10px; }
+        .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 768px) { .two-column { grid-template-columns: 1fr; } }
+        .current-prompt { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 10px; margin-bottom: 20px; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎙️ AI Voice Assistant</h1>
+            <p><strong>Custom System Prompts Edition</strong></p>
+            <p>Create your own AI personality and test voice conversations</p>
+        </div>
+        
+        <div class="form-group">
+            <label for="deviceId">Device ID (Optional):</label>
+            <input type="text" id="deviceId" value="CUSTOM_PROMPT_CLIENT" placeholder="Enter device identifier">
+        </div>
+        
+        <div class="form-group">
+            <label for="systemPrompt">🤖 AI System Prompt:</label>
+            <div class="preset-prompts">
+                <button class="preset-btn" onclick="loadPreset('teacher')">👩‍🏫 Teacher</button>
+                <button class="preset-btn" onclick="loadPreset('friend')">😊 Friend</button>
+                <button class="preset-btn" onclick="loadPreset('coach')">💪 Coach</button>
+                <button class="preset-btn" onclick="loadPreset('assistant')">🤖 Assistant</button>
+                <button class="preset-btn" onclick="loadPreset('storyteller')">📚 Storyteller</button>
+                <button class="preset-btn" onclick="loadPreset('pirate')">🏴‍☠️ Pirate</button>
+            </div>
+            <textarea id="systemPrompt" placeholder="Enter your custom system prompt here...">You are a helpful AI assistant in a voice conversation. Respond naturally and conversationally. Keep your responses concise since they will be spoken aloud. Be friendly, helpful, and engaging.</textarea>
+            <div class="current-prompt">
+                <strong>Current Prompt Preview:</strong> <span id="promptPreview">Default assistant prompt loaded</span>
+            </div>
+        </div>
+        
+        <div class="two-column">
+            <div>
+                <div class="form-group">
+                    <button onclick="testMicrophone()">🎤 Test Microphone</button>
+                    <div id="audioLevel">
+                        <div id="audioLevelBar"></div>
+                    </div>
+                    <small>Speak to see audio levels</small>
+                </div>
+            </div>
+            <div>
+                <div class="form-group">
+                    <button onclick="connectWebRTC()" id="connectBtn">🔗 Start Voice Chat</button>
+                    <button onclick="disconnect()" id="disconnectBtn" disabled>❌ Stop Chat</button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="status"></div>
+        
+        <h3>📋 Connection Logs:</h3>
+        <div id="logs" class="logs"></div>
+    </div>
+
+    <script>
+        let pc = null;
+        let localStream = null;
+        let audioContext = null;
+        let analyser = null;
+        let microphone = null;
+        let connected = false;
+
+        const presetPrompts = {
+            teacher: "You are a friendly and patient teacher having a voice conversation with a student. Explain concepts clearly, ask engaging questions, and provide encouragement. Keep responses educational but conversational since they will be spoken aloud. Adapt your teaching style to be engaging and interactive.",
+            friend: "You are a warm, supportive friend having a casual voice chat. Be empathetic, ask follow-up questions, share appropriate stories or experiences, and keep the conversation light and engaging. Respond naturally as if talking to a close friend. Show genuine interest in what they're saying.",
+            coach: "You are an enthusiastic life coach and motivator in a voice conversation. Be encouraging, ask powerful questions, help the person think through challenges, and provide actionable advice. Keep your energy positive and inspiring. Help them discover their own solutions.",
+            assistant: "You are a professional AI assistant in a voice conversation. Be helpful, efficient, and informative while maintaining a friendly tone. Provide clear, actionable responses and ask clarifying questions when needed. Focus on being practical and solution-oriented.",
+            storyteller: "You are a captivating storyteller sharing tales through voice. Create engaging narratives, use vivid descriptions, vary your pacing for dramatic effect, and invite the listener into the story. Make it interactive by asking what they'd like to hear about. Build suspense and excitement.",
+            pirate: "Ahoy! You be a friendly pirate captain having a voice chat with a landlubber! Speak like a pirate with 'ahoy', 'matey', 'arr', and nautical terms. Be adventurous, tell tales of the high seas, but keep it family-friendly and fun. Your responses should be spoken aloud, so avoid special characters."
+        };
+
+        function loadPreset(type) {
+            const prompt = presetPrompts[type];
+            document.getElementById('systemPrompt').value = prompt;
+            updatePromptPreview(prompt);
+            log(`Loaded ${type} preset prompt`, 'info');
+        }
+
+        function updatePromptPreview(prompt) {
+            const preview = document.getElementById('promptPreview');
+            if (prompt.length > 100) {
+                preview.textContent = prompt.substring(0, 97) + '...';
+            } else {
+                preview.textContent = prompt;
+            }
+        }
+
+        // Update preview when typing
+        document.addEventListener('DOMContentLoaded', function() {
+            const textarea = document.getElementById('systemPrompt');
+            textarea.addEventListener('input', function() {
+                updatePromptPreview(this.value);
+            });
+            updatePromptPreview(textarea.value);
+        });
+
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.style.color = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : type === 'warning' ? '#ffc107' : '#007bff';
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            logs.appendChild(logEntry);
+            logs.scrollTop = logs.scrollHeight;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.innerHTML = `<div class="${type}">${message}</div>`;
+        }
+
+        async function testMicrophone() {
+            try {
+                log('Requesting microphone access...', 'info');
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 48000
+                    }
+                });
+
+                log('✅ Microphone access granted!', 'success');
+                showStatus('✅ Microphone ready! Speak to test audio levels.', 'success');
+
+                // Set up audio level monitoring
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                
+                microphone.connect(analyser);
+                analyser.fftSize = 256;
+                
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                function updateAudioLevel() {
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for (let i = 0; i < bufferLength; i++) {
+                        sum += dataArray[i];
+                    }
+                    const average = sum / bufferLength;
+                    const percentage = Math.min((average / 128) * 100, 100);
+                    
+                    document.getElementById('audioLevelBar').style.width = percentage + '%';
+                    
+                    if (!connected) {
+                        requestAnimationFrame(updateAudioLevel);
+                    }
+                }
+                updateAudioLevel();
+
+                localStream = stream;
+                
+            } catch (error) {
+                log(`❌ Microphone access failed: ${error.message}`, 'error');
+                showStatus(`❌ Microphone access denied. Please allow microphone permissions and try again.`, 'error');
+            }
+        }
+
+        async function connectWebRTC() {
+            const deviceId = document.getElementById('deviceId').value.trim() || 'CUSTOM_PROMPT_CLIENT';
+            const systemPrompt = document.getElementById('systemPrompt').value.trim();
+            
+            if (!systemPrompt) {
+                showStatus('❌ Please enter a system prompt', 'error');
+                return;
+            }
+
+            if (!localStream) {
+                showStatus('❌ Please test microphone first', 'error');
+                return;
+            }
+
+            try {
+                document.getElementById('connectBtn').disabled = true;
+                log(`Starting voice chat with device: ${deviceId}`, 'info');
+                log(`Using custom system prompt (${systemPrompt.length} characters)`, 'info');
+                log(`Prompt preview: ${systemPrompt.substring(0, 100)}...`, 'info');
+
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                });
+
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                    log(`Added ${track.kind} track`, 'info');
+                });
+
+                pc.ontrack = (event) => {
+                    log(`Received ${event.track.kind} from AI`, 'success');
+                    if (event.track.kind === 'audio') {
+                        const audio = document.createElement('audio');
+                        audio.srcObject = event.streams[0];
+                        audio.autoplay = true;
+                        audio.style.display = 'none';
+                        document.body.appendChild(audio);
+                        log('🔊 AI voice channel ready', 'success');
+                    }
+                };
+
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        log(`ICE: ${event.candidate.candidate.split(' ')[7] || 'candidate'}`, 'info');
+                    }
+                };
+
+                pc.onconnectionstatechange = () => {
+                    log(`Connection: ${pc.connectionState}`, 'info');
+                    if (pc.connectionState === 'connected') {
+                        connected = true;
+                        showStatus('✅ Voice chat connected! Start speaking to the AI.', 'success');
+                        document.getElementById('disconnectBtn').disabled = false;
+                    } else if (pc.connectionState === 'failed') {
+                        showStatus('❌ Connection failed. Try again.', 'error');
+                        disconnect();
+                    }
+                };
+
+                const offer = await pc.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: false
+                });
+                
+                await pc.setLocalDescription(offer);
+                log('Created WebRTC offer', 'info');
+
+                const response = await fetch('/api/offer', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Device-ID': deviceId,
+                        'X-Custom-Prompt': 'true'
+                    },
+                    body: JSON.stringify({
+                        device_id: deviceId,
+                        type: 'offer',
+                        sdp: offer.sdp,
+                        custom_system_prompt: systemPrompt
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+
+                const answer = await response.json();
+                log('Received server response', 'success');
+
+                await pc.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: answer.sdp
+                }));
+                
+                log('WebRTC handshake completed', 'success');
+                showStatus('🔄 Connecting... The AI will introduce itself shortly.', 'info');
+
+            } catch (error) {
+                log(`❌ Connection failed: ${error.message}`, 'error');
+                showStatus(`❌ Connection failed: ${error.message}`, 'error');
+                document.getElementById('connectBtn').disabled = false;
+            }
+        }
+
+        function disconnect() {
+            if (pc) {
+                pc.close();
+                pc = null;
+                log('WebRTC connection closed', 'info');
+            }
+            
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+                log('Microphone stopped', 'info');
+            }
+
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
+            connected = false;
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            document.getElementById('audioLevelBar').style.width = '0%';
+            showStatus('Voice chat disconnected', 'info');
+        }
+
+        // Initialize on page load
+        window.addEventListener('load', () => {
+            log('🚀 AI Voice Assistant with Custom Prompts ready', 'info');
+            log('1. Choose a preset or write custom prompt', 'info');
+            log('2. Test microphone', 'info');
+            log('3. Start voice chat', 'info');
+            
+            // Load default prompt
+            updatePromptPreview(document.getElementById('systemPrompt').value);
+        });
+    </script>
+</body>
+</html>
+        """)
+    
     # WebRTC offer endpoint - exactly like 07-interruptible.py approach with ESP32 support
     @app.post("/api/offer",
               summary="WebRTC offer handler", 
@@ -734,15 +1720,23 @@ def create_enhanced_app() -> FastAPI:
                 None
             )
             
-            logger.info(f"Received WebRTC offer from device: {device_id}")
+            # Extract custom system prompt if provided
+            custom_system_prompt = body.get("custom_system_prompt")
+            is_custom_prompt = request.headers.get("X-Custom-Prompt") == "true"
             
-            # Store session info
+            logger.info(f"Received WebRTC offer from device: {device_id}")
+            if custom_system_prompt:
+                logger.info(f"Using custom system prompt ({len(custom_system_prompt)} characters)")
+            
+            # Store session info with custom prompt info
             session_id = f"webrtc_{device_id or 'unknown'}_{len(active_sessions)}"
             active_sessions[session_id] = {
                 "device_id": device_id,
                 "created_at": datetime.now(timezone.utc),
                 "status": "connecting",
-                "type": "webrtc"
+                "type": "webrtc",
+                "custom_prompt": bool(custom_system_prompt),
+                "prompt_length": len(custom_system_prompt) if custom_system_prompt else 0
             }
             
             # Create WebRTC connection with ESP32 support - like the working examples
@@ -781,13 +1775,15 @@ def create_enhanced_app() -> FastAPI:
             runner_args.handle_sigint = False
             runner_args.pipeline_idle_timeout_secs = 60  # Increased timeout for better stability
             
-            # Start the enhanced bot in background - exactly like working examples
-            background_tasks.add_task(enhanced_bot_webrtc, runner_args, device_id)
+            # Start the enhanced bot in background with custom prompt
+            background_tasks.add_task(enhanced_bot_webrtc, runner_args, device_id, custom_system_prompt)
             
             # Update session status
             active_sessions[session_id]["status"] = "connected"
             
-            logger.info(f"WebRTC connection established for ESP32 device: {device_id}")
+            logger.info(f"WebRTC connection established for device: {device_id}")
+            if custom_system_prompt:
+                logger.info(f"Using custom system prompt for enhanced AI personality")
             
             # Return the munged SDP answer for ESP32 compatibility
             return answer
@@ -811,9 +1807,11 @@ def create_enhanced_app() -> FastAPI:
     
     return app
 
-async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None):
-    """Enhanced bot function - exactly like 07-interruptible.py but with Firebase integration"""
+async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None, custom_system_prompt: str = None):
+    """Enhanced bot function - exactly like 07-interruptible.py but with Firebase integration and custom prompts"""
     logger.info(f"Starting enhanced bot for device: {device_id}")
+    if custom_system_prompt:
+        logger.info(f"Using custom system prompt ({len(custom_system_prompt)} characters)")
     
     conversation_id = None
     user = None
@@ -866,8 +1864,13 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
 
         llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # Get enhanced system prompt based on user data
-        system_prompt = await get_enhanced_system_prompt(device_id)
+        # Use custom system prompt if provided, otherwise get enhanced prompt
+        if custom_system_prompt:
+            system_prompt = custom_system_prompt
+            logger.info(f"Using custom system prompt: {system_prompt[:100]}...")
+        else:
+            system_prompt = await get_enhanced_system_prompt(device_id)
+            logger.info("Using enhanced system prompt from Firebase/default")
         
         messages = [
             {
@@ -913,7 +1916,13 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
                     logger.warning(f"Failed to update last seen for {device_id}: {e}")
             
             # Kick off the conversation - exactly like 07-interruptible.py
-            messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+            if custom_system_prompt:
+                # For custom prompts, give a more generic introduction
+                messages.append({"role": "system", "content": "Please introduce yourself to the user according to your role and start the conversation."})
+            else:
+                # Use the standard introduction for Firebase users
+                messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+            
             await task.queue_frames([context_aggregator.user().get_context_frame()])
 
         @transport.event_handler("on_client_disconnected")
@@ -933,6 +1942,7 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
                         # Update transcript with conversation messages
                         transcript_doc['messages'] = conversation_messages
                         transcript_doc['ended_at'] = datetime.now(timezone.utc).isoformat()
+                        transcript_doc['custom_prompt_used'] = bool(custom_system_prompt)
                         
                         await firebase_service.update_document("conversation_transcripts", conversation_id, transcript_doc)
                         
@@ -962,14 +1972,14 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
             del active_transports[device_id]
         raise
 
-async def enhanced_bot(runner_args: RunnerArguments, device_id: str = None):
-    """Enhanced bot entry point - like 07-interruptible.py but with device_id"""
+async def enhanced_bot(runner_args: RunnerArguments, device_id: str = None, custom_system_prompt: str = None):
+    """Enhanced bot entry point - like 07-interruptible.py but with device_id and custom prompts"""
     transport = await create_transport(runner_args, transport_params)
     active_transports[device_id or "default"] = transport
-    await run_enhanced_bot(transport, runner_args, device_id)
+    await run_enhanced_bot(transport, runner_args, device_id, custom_system_prompt)
 
-async def enhanced_bot_webrtc(runner_args: SmallWebRTCRunnerArguments, device_id: str = None):
-    """Enhanced bot entry point for WebRTC connections with Firebase integration"""
+async def enhanced_bot_webrtc(runner_args: SmallWebRTCRunnerArguments, device_id: str = None, custom_system_prompt: str = None):
+    """Enhanced bot entry point for WebRTC connections with Firebase integration and custom prompts"""
     from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
     from pipecat.runner.utils import _get_transport_params
     
@@ -982,8 +1992,8 @@ async def enhanced_bot_webrtc(runner_args: SmallWebRTCRunnerArguments, device_id
     # Store in active transports
     active_transports[device_id or "default"] = transport
     
-    # Run the enhanced bot with WebRTC transport
-    await run_enhanced_bot(transport, runner_args, device_id)
+    # Run the enhanced bot with WebRTC transport and custom prompt
+    await run_enhanced_bot(transport, runner_args, device_id, custom_system_prompt)
 
 # Create the enhanced app
 app = create_enhanced_app()
