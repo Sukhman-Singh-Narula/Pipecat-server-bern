@@ -46,6 +46,7 @@ from utils import setup_logging, handle_generic_error
 from api.enhanced_users import router as enhanced_users_router
 from api.episodes import router as episodes_router
 from api.conversations import router as conversations_router
+from routes.prompts import router as prompts_router
 
 load_dotenv(override=True)
 
@@ -275,6 +276,7 @@ def create_enhanced_app() -> FastAPI:
     app.include_router(enhanced_users_router, tags=["Enhanced Users"])
     app.include_router(episodes_router, tags=["Episode Prompts"])
     app.include_router(conversations_router, tags=["Conversations"])
+    app.include_router(prompts_router, tags=["Prompts"])
     
     # Enhanced root endpoint
     @app.get("/", 
