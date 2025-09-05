@@ -260,3 +260,47 @@ async def get_prompt_types():
             for prompt_type in PromptType
         ]
     }
+
+
+@router.post("/cache/clear",
+             summary="Clear prompt cache",
+             description="Clear all cached prompts (admin only)")
+async def clear_prompt_cache(prompt_service: PromptService = Depends(get_prompt_service_dependency)):
+    """Clear all cached prompts"""
+    try:
+        prompt_service.clear_cache()
+        return {"message": "Prompt cache cleared successfully", "status": "success"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=handle_generic_error(e)
+        )
+
+
+@router.delete("/{season}/{episode}/cache",
+               summary="Invalidate specific prompt cache",
+               description="Clear cache for a specific prompt")
+async def invalidate_prompt_cache(season: int, episode: int, prompt_service: PromptService = Depends(get_prompt_service_dependency)):
+    """Invalidate cache for a specific prompt"""
+    try:
+        prompt_service.invalidate_prompt_cache(season, episode)
+        return {"message": f"Cache cleared for Season {season}, Episode {episode}", "status": "success"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=handle_generic_error(e)
+        )
+
+
+@router.get("/cache/status",
+            summary="Get cache status",
+            description="Get information about cached prompts")
+async def get_cache_status(prompt_service: PromptService = Depends(get_prompt_service_dependency)):
+    """Get cache status information"""
+    try:
+        return prompt_service.get_cache_status()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=handle_generic_error(e)
+        )

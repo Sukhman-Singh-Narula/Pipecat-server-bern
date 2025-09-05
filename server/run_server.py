@@ -85,8 +85,10 @@ async def get_enhanced_system_prompt(device_id: str = None) -> str:
     try:
         # Get Firebase service
         from services.firebase_service import get_firebase_service
+        from services.prompt_service import get_prompt_service
         
         firebase_service = get_firebase_service()
+        prompt_service = get_prompt_service()
         
         # Get user document directly using device_id as document ID
         user_doc = await firebase_service.get_document("users", device_id)
@@ -106,30 +108,17 @@ async def get_enhanced_system_prompt(device_id: str = None) -> str:
             
             logger.info(f"Found user for device {device_id}: {name} (age {age}, Season {season}, Episode {episode})")
             
-            # Try different system prompt document ID formats
-            system_prompt_id_formats = [
-                f"season_{season}_episode_{episode}",
-                f"s{season}e{episode}",
-                f"{season}_{episode}",
-                f"season{season}_episode{episode}"
-            ]
-            
-            system_prompt_doc = None
-            for prompt_id in system_prompt_id_formats:
-                prompt_doc = await firebase_service.get_document("system_prompts", prompt_id)
-                if prompt_doc:
-                    system_prompt_doc = prompt_doc
-                    logger.info(f"Found system prompt with ID: {prompt_id}")
-                    break
-            
-            if system_prompt_doc:
-                # Extract system prompt data
-                title = system_prompt_doc.get('title', f'Season {season} Episode {episode}')
-                content = system_prompt_doc.get('content', '')
-                learning_objectives = system_prompt_doc.get('learning_objectives', [])
-                words_to_teach = system_prompt_doc.get('words_to_teach', [])
-                topics_to_cover = system_prompt_doc.get('topics_to_cover', [])
-                difficulty_level = system_prompt_doc.get('difficulty_level', 'beginner')
+            # Use PromptService to get fresh prompt data (no caching)
+            try:
+                prompt_response = await prompt_service.get_system_prompt(season, episode)
+                
+                # Extract system prompt data from PromptService response
+                title = prompt_response.title
+                content = prompt_response.prompt
+                learning_objectives = prompt_response.metadata.get('learning_objectives', [])
+                words_to_teach = prompt_response.metadata.get('words_to_teach', [])
+                topics_to_cover = prompt_response.metadata.get('topics_to_cover', [])
+                difficulty_level = prompt_response.metadata.get('difficulty_level', 'beginner')
                 
                 # Create enhanced system prompt with user context
                 enhanced_prompt = f"""You are a friendly AI tutor helping {name} (age {age}) learn English.
@@ -164,10 +153,13 @@ Remember to:
 
 Start the conversation by greeting {name} warmly and beginning the lesson content."""
                 
-                logger.info(f"Created enhanced system prompt for {name} - Length: {len(enhanced_prompt)} characters")
+                logger.info(f"Created enhanced system prompt for {name} using PromptService - Length: {len(enhanced_prompt)} characters")
                 return enhanced_prompt
-            
-            else:
+                
+            except Exception as prompt_error:
+                logger.warning(f"Could not get prompt via PromptService for S{season}E{episode}: {prompt_error}")
+                # Fall back to manual Firebase query (your original method)
+                pass
                 # No system prompt found, but we have user data
                 logger.warning(f"No system prompt found for Season {season}, Episode {episode}. Using user-specific fallback.")
                 
@@ -1354,355 +1346,6 @@ def create_enhanced_app() -> FastAPI:
 </html>
         """)
     
-    # Add a completely new custom prompt client at /prompt-client
-    @app.get("/prompt-client", response_class=HTMLResponse)
-    async def prompt_client():
-        """Serve custom prompt WebRTC client"""
-        return HTMLResponse(content="""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Voice Assistant - Custom System Prompts</title>
-    <style>
-        body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
-        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 8px; font-weight: bold; color: #333; }
-        input, textarea, button { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; box-sizing: border-box; }
-        textarea { min-height: 120px; resize: vertical; font-family: inherit; }
-        button { background: #007bff; color: white; cursor: pointer; margin-top: 10px; border: none; }
-        button:hover { background: #0056b3; }
-        button:disabled { background: #ccc; cursor: not-allowed; }
-        .status { padding: 12px; border-radius: 5px; margin: 15px 0; }
-        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
-        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
-        #audioLevel { width: 100%; height: 25px; background: #f0f0f0; border: 1px solid #ccc; border-radius: 5px; margin-top: 10px; }
-        #audioLevelBar { height: 100%; background: linear-gradient(90deg, #28a745, #ffc107, #dc3545); width: 0%; transition: width 0.1s; border-radius: 5px; }
-        .logs { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; height: 200px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }
-        .preset-prompts { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; }
-        .preset-btn { background: #6c757d; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 14px; width: auto; }
-        .preset-btn:hover { background: #5a6268; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .header h1 { color: #007bff; margin-bottom: 10px; }
-        .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        @media (max-width: 768px) { .two-column { grid-template-columns: 1fr; } }
-        .current-prompt { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 10px; margin-bottom: 20px; font-size: 14px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🎙️ AI Voice Assistant</h1>
-            <p><strong>Custom System Prompts Edition</strong></p>
-            <p>Create your own AI personality and test voice conversations</p>
-        </div>
-        
-        <div class="form-group">
-            <label for="deviceId">Device ID (Optional):</label>
-            <input type="text" id="deviceId" value="CUSTOM_PROMPT_CLIENT" placeholder="Enter device identifier">
-        </div>
-        
-        <div class="form-group">
-            <label for="systemPrompt">🤖 AI System Prompt:</label>
-            <div class="preset-prompts">
-                <button class="preset-btn" onclick="loadPreset('teacher')">👩‍🏫 Teacher</button>
-                <button class="preset-btn" onclick="loadPreset('friend')">😊 Friend</button>
-                <button class="preset-btn" onclick="loadPreset('coach')">💪 Coach</button>
-                <button class="preset-btn" onclick="loadPreset('assistant')">🤖 Assistant</button>
-                <button class="preset-btn" onclick="loadPreset('storyteller')">📚 Storyteller</button>
-                <button class="preset-btn" onclick="loadPreset('pirate')">🏴‍☠️ Pirate</button>
-            </div>
-            <textarea id="systemPrompt" placeholder="Enter your custom system prompt here...">You are a helpful AI assistant in a voice conversation. Respond naturally and conversationally. Keep your responses concise since they will be spoken aloud. Be friendly, helpful, and engaging.</textarea>
-            <div class="current-prompt">
-                <strong>Current Prompt Preview:</strong> <span id="promptPreview">Default assistant prompt loaded</span>
-            </div>
-        </div>
-        
-        <div class="two-column">
-            <div>
-                <div class="form-group">
-                    <button onclick="testMicrophone()">🎤 Test Microphone</button>
-                    <div id="audioLevel">
-                        <div id="audioLevelBar"></div>
-                    </div>
-                    <small>Speak to see audio levels</small>
-                </div>
-            </div>
-            <div>
-                <div class="form-group">
-                    <button onclick="connectWebRTC()" id="connectBtn">🔗 Start Voice Chat</button>
-                    <button onclick="disconnect()" id="disconnectBtn" disabled>❌ Stop Chat</button>
-                </div>
-            </div>
-        </div>
-        
-        <div id="status"></div>
-        
-        <h3>📋 Connection Logs:</h3>
-        <div id="logs" class="logs"></div>
-    </div>
-
-    <script>
-        let pc = null;
-        let localStream = null;
-        let audioContext = null;
-        let analyser = null;
-        let microphone = null;
-        let connected = false;
-
-        const presetPrompts = {
-            teacher: "You are a friendly and patient teacher having a voice conversation with a student. Explain concepts clearly, ask engaging questions, and provide encouragement. Keep responses educational but conversational since they will be spoken aloud. Adapt your teaching style to be engaging and interactive.",
-            friend: "You are a warm, supportive friend having a casual voice chat. Be empathetic, ask follow-up questions, share appropriate stories or experiences, and keep the conversation light and engaging. Respond naturally as if talking to a close friend. Show genuine interest in what they're saying.",
-            coach: "You are an enthusiastic life coach and motivator in a voice conversation. Be encouraging, ask powerful questions, help the person think through challenges, and provide actionable advice. Keep your energy positive and inspiring. Help them discover their own solutions.",
-            assistant: "You are a professional AI assistant in a voice conversation. Be helpful, efficient, and informative while maintaining a friendly tone. Provide clear, actionable responses and ask clarifying questions when needed. Focus on being practical and solution-oriented.",
-            storyteller: "You are a captivating storyteller sharing tales through voice. Create engaging narratives, use vivid descriptions, vary your pacing for dramatic effect, and invite the listener into the story. Make it interactive by asking what they'd like to hear about. Build suspense and excitement.",
-            pirate: "Ahoy! You be a friendly pirate captain having a voice chat with a landlubber! Speak like a pirate with 'ahoy', 'matey', 'arr', and nautical terms. Be adventurous, tell tales of the high seas, but keep it family-friendly and fun. Your responses should be spoken aloud, so avoid special characters."
-        };
-
-        function loadPreset(type) {
-            const prompt = presetPrompts[type];
-            document.getElementById('systemPrompt').value = prompt;
-            updatePromptPreview(prompt);
-            log(`Loaded ${type} preset prompt`, 'info');
-        }
-
-        function updatePromptPreview(prompt) {
-            const preview = document.getElementById('promptPreview');
-            if (prompt.length > 100) {
-                preview.textContent = prompt.substring(0, 97) + '...';
-            } else {
-                preview.textContent = prompt;
-            }
-        }
-
-        // Update preview when typing
-        document.addEventListener('DOMContentLoaded', function() {
-            const textarea = document.getElementById('systemPrompt');
-            textarea.addEventListener('input', function() {
-                updatePromptPreview(this.value);
-            });
-            updatePromptPreview(textarea.value);
-        });
-
-        function log(message, type = 'info') {
-            const logs = document.getElementById('logs');
-            const timestamp = new Date().toLocaleTimeString();
-            const logEntry = document.createElement('div');
-            logEntry.style.color = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : type === 'warning' ? '#ffc107' : '#007bff';
-            logEntry.textContent = `[${timestamp}] ${message}`;
-            logs.appendChild(logEntry);
-            logs.scrollTop = logs.scrollHeight;
-            console.log(`[${type.toUpperCase()}] ${message}`);
-        }
-
-        function showStatus(message, type) {
-            const status = document.getElementById('status');
-            status.innerHTML = `<div class="${type}">${message}</div>`;
-        }
-
-        async function testMicrophone() {
-            try {
-                log('Requesting microphone access...', 'info');
-                
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
-                        sampleRate: 48000
-                    }
-                });
-
-                log('✅ Microphone access granted!', 'success');
-                showStatus('✅ Microphone ready! Speak to test audio levels.', 'success');
-
-                // Set up audio level monitoring
-                audioContext = new AudioContext();
-                analyser = audioContext.createAnalyser();
-                microphone = audioContext.createMediaStreamSource(stream);
-                
-                microphone.connect(analyser);
-                analyser.fftSize = 256;
-                
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Uint8Array(bufferLength);
-
-                function updateAudioLevel() {
-                    analyser.getByteFrequencyData(dataArray);
-                    let sum = 0;
-                    for (let i = 0; i < bufferLength; i++) {
-                        sum += dataArray[i];
-                    }
-                    const average = sum / bufferLength;
-                    const percentage = Math.min((average / 128) * 100, 100);
-                    
-                    document.getElementById('audioLevelBar').style.width = percentage + '%';
-                    
-                    if (!connected) {
-                        requestAnimationFrame(updateAudioLevel);
-                    }
-                }
-                updateAudioLevel();
-
-                localStream = stream;
-                
-            } catch (error) {
-                log(`❌ Microphone access failed: ${error.message}`, 'error');
-                showStatus(`❌ Microphone access denied. Please allow microphone permissions and try again.`, 'error');
-            }
-        }
-
-        async function connectWebRTC() {
-            const deviceId = document.getElementById('deviceId').value.trim() || 'CUSTOM_PROMPT_CLIENT';
-            const systemPrompt = document.getElementById('systemPrompt').value.trim();
-            
-            if (!systemPrompt) {
-                showStatus('❌ Please enter a system prompt', 'error');
-                return;
-            }
-
-            if (!localStream) {
-                showStatus('❌ Please test microphone first', 'error');
-                return;
-            }
-
-            try {
-                document.getElementById('connectBtn').disabled = true;
-                log(`Starting voice chat with device: ${deviceId}`, 'info');
-                log(`Using custom system prompt (${systemPrompt.length} characters)`, 'info');
-                log(`Prompt preview: ${systemPrompt.substring(0, 100)}...`, 'info');
-
-                pc = new RTCPeerConnection({
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' }
-                    ]
-                });
-
-                localStream.getTracks().forEach(track => {
-                    pc.addTrack(track, localStream);
-                    log(`Added ${track.kind} track`, 'info');
-                });
-
-                pc.ontrack = (event) => {
-                    log(`Received ${event.track.kind} from AI`, 'success');
-                    if (event.track.kind === 'audio') {
-                        const audio = document.createElement('audio');
-                        audio.srcObject = event.streams[0];
-                        audio.autoplay = true;
-                        audio.style.display = 'none';
-                        document.body.appendChild(audio);
-                        log('🔊 AI voice channel ready', 'success');
-                    }
-                };
-
-                pc.onicecandidate = (event) => {
-                    if (event.candidate) {
-                        log(`ICE: ${event.candidate.candidate.split(' ')[7] || 'candidate'}`, 'info');
-                    }
-                };
-
-                pc.onconnectionstatechange = () => {
-                    log(`Connection: ${pc.connectionState}`, 'info');
-                    if (pc.connectionState === 'connected') {
-                        connected = true;
-                        showStatus('✅ Voice chat connected! Start speaking to the AI.', 'success');
-                        document.getElementById('disconnectBtn').disabled = false;
-                    } else if (pc.connectionState === 'failed') {
-                        showStatus('❌ Connection failed. Try again.', 'error');
-                        disconnect();
-                    }
-                };
-
-                const offer = await pc.createOffer({
-                    offerToReceiveAudio: true,
-                    offerToReceiveVideo: false
-                });
-                
-                await pc.setLocalDescription(offer);
-                log('Created WebRTC offer', 'info');
-
-                const response = await fetch('/api/offer', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-Device-ID': deviceId,
-                        'X-Custom-Prompt': 'true'
-                    },
-                    body: JSON.stringify({
-                        device_id: deviceId,
-                        type: 'offer',
-                        sdp: offer.sdp,
-                        custom_system_prompt: systemPrompt
-                    })
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Server error: ${response.status}`);
-                }
-
-                const answer = await response.json();
-                log('Received server response', 'success');
-
-                await pc.setRemoteDescription(new RTCSessionDescription({
-                    type: 'answer',
-                    sdp: answer.sdp
-                }));
-                
-                log('WebRTC handshake completed', 'success');
-                showStatus('🔄 Connecting... The AI will introduce itself shortly.', 'info');
-
-            } catch (error) {
-                log(`❌ Connection failed: ${error.message}`, 'error');
-                showStatus(`❌ Connection failed: ${error.message}`, 'error');
-                document.getElementById('connectBtn').disabled = false;
-            }
-        }
-
-        function disconnect() {
-            if (pc) {
-                pc.close();
-                pc = null;
-                log('WebRTC connection closed', 'info');
-            }
-            
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                localStream = null;
-                log('Microphone stopped', 'info');
-            }
-
-            if (audioContext) {
-                audioContext.close();
-                audioContext = null;
-            }
-
-            connected = false;
-            document.getElementById('connectBtn').disabled = false;
-            document.getElementById('disconnectBtn').disabled = true;
-            document.getElementById('audioLevelBar').style.width = '0%';
-            showStatus('Voice chat disconnected', 'info');
-        }
-
-        // Initialize on page load
-        window.addEventListener('load', () => {
-            log('🚀 AI Voice Assistant with Custom Prompts ready', 'info');
-            log('1. Choose a preset or write custom prompt', 'info');
-            log('2. Test microphone', 'info');
-            log('3. Start voice chat', 'info');
-            
-            // Load default prompt
-            updatePromptPreview(document.getElementById('systemPrompt').value);
-        });
-    </script>
-</body>
-</html>
-        """)
-    
     # WebRTC offer endpoint - exactly like 07-interruptible.py approach with ESP32 support
     @app.post("/api/offer",
               summary="WebRTC offer handler", 
@@ -1802,8 +1445,210 @@ def create_enhanced_app() -> FastAPI:
             "webrtc_client": "/client",
             "offer_endpoint": "/api/offer",
             "instructions": "ESP32 devices should send WebRTC offers to /api/offer",
-            "browser_client": "Open /client in browser for testing"
+            "browser_client": "Open /client in browser for testing",
+            "features": [
+                "Interactive story sessions",
+                "Automatic progress tracking", 
+                "OpenAI function calling for story completion",
+                "Season/episode advancement",
+                "Learning analytics"
+            ]
         }
+
+    # Get user progress endpoint
+    @app.get("/users/{device_id}",
+             summary="Get user progress",
+             description="Get user progress and learning data")
+    async def get_user_progress(device_id: str):
+        """Get user progress and learning data"""
+        try:
+            logger.info(f"🔍 UPDATED ENDPOINT - Getting user progress for device_id: {device_id}")
+            from services.firebase_service import get_firebase_service
+            firebase_service = get_firebase_service()
+            
+            user_data = await firebase_service.get_document("users", device_id)
+            if not user_data:
+                logger.info(f"🆕 User {device_id} not found, returning default progress")
+                # Return empty progress structure for non-existent users
+                return {
+                    "device_id": device_id,
+                    "progress": {
+                        "season": 1,
+                        "episode": 1,
+                        "episodes_completed": 0,
+                        "words_learnt": [],
+                        "topics_learnt": [],
+                        "total_time_minutes": 0
+                    },
+                    "status": "new_user",
+                    "message": "User not found in database, showing default progress"
+                }
+            
+            logger.info(f"✅ Found user data for {device_id}")
+            return user_data
+            
+        except Exception as e:
+            logger.error(f"Error getting user progress: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Manual story completion endpoint for testing
+    @app.post("/api/complete-story",
+              summary="Manual story completion",
+              description="Manually complete a story episode for a user (testing only)")
+    async def manual_story_completion(request: Request):
+        """Manual story completion for testing purposes"""
+        try:
+            body = await request.json()
+            device_id = body.get("device_id")
+            words_learned = body.get("words_learned", [])
+            topics_covered = body.get("topics_covered", [])
+            time_spent_minutes = body.get("time_spent_minutes", 10)
+            
+            logger.info(f"📚 Manual story completion started for device: {device_id}")
+            
+            if not device_id:
+                raise HTTPException(status_code=400, detail="device_id is required")
+            
+            from services.firebase_service import get_firebase_service
+            firebase_service = get_firebase_service()
+            
+            # Get current user data from users collection (device_id based)
+            logger.info(f"🔍 Looking for user in users collection: {device_id}")
+            current_user_data = await firebase_service.get_document("users", device_id)
+            
+            if not current_user_data:
+                # If user doesn't exist in users collection, create a basic entry
+                logger.info(f"✨ Creating basic user entry for device {device_id}")
+                current_user_data = {
+                    "device_id": device_id,
+                    "progress": {
+                        "season": 1,
+                        "episode": 1,
+                        "episodes_completed": 0,
+                        "words_learnt": [],
+                        "topics_learnt": [],
+                        "total_time_minutes": 0
+                    },
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "last_seen": datetime.now(timezone.utc).isoformat()
+                }
+                await firebase_service.set_document("users", device_id, current_user_data)
+                logger.info(f"✅ User created in users collection: {device_id}")
+            else:
+                logger.info(f"✅ User found in users collection: {device_id}")
+            
+            logger.info(f"📈 Processing story completion data...")
+            
+            # Add new words (avoid duplicates)
+            existing_words = set(current_user_data.get("progress", {}).get("words_learnt", []))
+            new_words = [w for w in words_learned if w.lower() not in [ew.lower() for ew in existing_words]]
+            all_words = list(existing_words) + new_words
+            
+            # Add new topics (avoid duplicates) 
+            existing_topics = set(current_user_data.get("progress", {}).get("topics_learnt", []))
+            new_topics = [t for t in topics_covered if t.lower() not in [et.lower() for et in existing_topics]]
+            all_topics = list(existing_topics) + new_topics
+            
+            # Update episodes completed
+            episodes_completed = current_user_data.get("progress", {}).get("episodes_completed", 0) + 1
+            
+            # Update user document
+            updates = {
+                "progress.words_learnt": all_words,
+                "progress.topics_learnt": all_topics,
+                "progress.episodes_completed": episodes_completed,
+                "progress.total_time_minutes": current_user_data.get("progress", {}).get("total_time_minutes", 0) + time_spent_minutes,
+                "last_seen": datetime.now(timezone.utc).isoformat()
+            }
+            
+            logger.info(f"💾 Updating user document with progress...")
+            await firebase_service.update_document("users", device_id, updates)
+            
+            logger.info(f"✅ Manual completion for {device_id}: +{len(new_words)} words, +{len(new_topics)} topics, +{time_spent_minutes} mins")
+            
+            return {
+                "status": "success",
+                "message": f"Episode completed for {device_id}",
+                "new_words_added": len(new_words),
+                "new_topics_added": len(new_topics),
+                "total_words": len(all_words),
+                "total_topics": len(all_topics),
+                "episodes_completed": episodes_completed,
+                "time_added_minutes": time_spent_minutes
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error in manual story completion: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Advance user progress endpoint
+    @app.post("/api/advance-progress",
+              summary="Advance user progress",
+              description="Advance user to next episode or season")
+    async def advance_user_progress(request: Request):
+        """Advance user to next episode or season"""
+        try:
+            body = await request.json()
+            device_id = body.get("device_id")
+            advance_type = body.get("advance_type", "next_episode")  # "next_episode" or "next_season"
+            
+            if not device_id:
+                raise HTTPException(status_code=400, detail="device_id is required")
+            
+            from services.firebase_service import get_firebase_service
+            firebase_service = get_firebase_service()
+            
+            current_user_data = await firebase_service.get_document("users", device_id)
+            if not current_user_data:
+                # Create basic user entry if doesn't exist
+                logger.info(f"Creating basic user entry for device {device_id}")
+                current_user_data = {
+                    "device_id": device_id,
+                    "progress": {
+                        "season": 1,
+                        "episode": 1,
+                        "episodes_completed": 0,
+                        "words_learnt": [],
+                        "topics_learnt": [],
+                        "total_time_minutes": 0
+                    },
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "last_seen": datetime.now(timezone.utc).isoformat()
+                }
+                await firebase_service.set_document("users", device_id, current_user_data)
+            
+            current_season = current_user_data.get("progress", {}).get("season", 1)
+            current_episode = current_user_data.get("progress", {}).get("episode", 1)
+            
+            if advance_type == "next_season":
+                new_season = current_season + 1
+                new_episode = 1
+            else:  # next_episode
+                new_season = current_season
+                new_episode = current_episode + 1
+            
+            # Update progress
+            updates = {
+                "progress.season": new_season,
+                "progress.episode": new_episode,
+                "last_seen": datetime.now(timezone.utc).isoformat()
+            }
+            
+            await firebase_service.update_document("users", device_id, updates)
+            
+            logger.info(f"Advanced user {device_id} from S{current_season}E{current_episode} to S{new_season}E{new_episode}")
+            
+            return {
+                "status": "success",
+                "message": f"Advanced {device_id} to Season {new_season}, Episode {new_episode}",
+                "previous": {"season": current_season, "episode": current_episode},
+                "current": {"season": new_season, "episode": new_episode},
+                "advance_type": advance_type
+            }
+            
+        except Exception as e:
+            logger.error(f"Error advancing user progress: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
     
     return app
 
@@ -1816,6 +1661,7 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
     conversation_id = None
     user = None
     firebase_service = None
+    conversation_start_time = datetime.now(timezone.utc)
     
     try:
         # Initialize conversation tracking if device_id is provided
@@ -1862,15 +1708,104 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
             voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
         )
 
-        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
+        # Enhanced LLM with function calling for story completion
+        llm = OpenAILLMService(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            model="gpt-4",  # Use GPT-4 for better function calling
+        )
+
+        # Define story completion functions for OpenAI to call
+        story_completion_functions = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "complete_story_episode",
+                    "description": "Call this when the interactive story/episode has been completed by the user. This will update their learning progress.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "words_learned": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of new words the user learned during this story episode"
+                            },
+                            "topics_covered": {
+                                "type": "array", 
+                                "items": {"type": "string"},
+                                "description": "List of topics/themes covered in this story episode"
+                            },
+                            "story_completed": {
+                                "type": "boolean",
+                                "description": "Whether the user successfully completed the entire story episode"
+                            },
+                            "user_engagement_level": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high"],
+                                "description": "How engaged the user was during the story (based on their responses and participation)"
+                            },
+                            "completion_summary": {
+                                "type": "string",
+                                "description": "Brief summary of what the user accomplished in this episode"
+                            }
+                        },
+                        "required": ["words_learned", "topics_covered", "story_completed", "user_engagement_level", "completion_summary"]
+                    }
+                }
+            },
+            {
+                "type": "function", 
+                "function": {
+                    "name": "advance_to_next_episode",
+                    "description": "Call this to advance the user to the next episode or season after they complete a story",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "advance_type": {
+                                "type": "string",
+                                "enum": ["next_episode", "next_season"],
+                                "description": "Whether to advance to next episode in same season or next season"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Reason for advancement (e.g., 'completed current episode successfully')"
+                            }
+                        },
+                        "required": ["advance_type", "reason"]
+                    }
+                }
+            }
+        ]
 
         # Use custom system prompt if provided, otherwise get enhanced prompt
         if custom_system_prompt:
-            system_prompt = custom_system_prompt
-            logger.info(f"Using custom system prompt: {system_prompt[:100]}...")
+            # Enhance custom prompts with story completion instructions
+            system_prompt = f"""{custom_system_prompt}
+
+IMPORTANT STORY COMPLETION INSTRUCTIONS:
+- You are conducting an interactive story session
+- Pay attention to when the user has completed the story/episode
+- When the story naturally concludes, call the 'complete_story_episode' function with:
+  * Words the user learned during the conversation
+  * Topics/themes covered in the story
+  * Whether they completed it successfully
+  * Their engagement level (low/medium/high)
+  * A brief summary of their accomplishment
+- After completion, if appropriate, call 'advance_to_next_episode' to progress them
+- Make the story interactive - ask questions, get user responses, guide them through the narrative
+- Keep responses conversational since they will be spoken aloud"""
+            logger.info(f"Using enhanced custom system prompt for interactive story")
         else:
             system_prompt = await get_enhanced_system_prompt(device_id)
-            logger.info("Using enhanced system prompt from Firebase/default")
+            # Add story completion instructions to Firebase prompts too
+            system_prompt += """
+
+IMPORTANT STORY COMPLETION INSTRUCTIONS:
+- You are conducting an interactive story/lesson session
+- Pay attention to when the user has completed the story/episode/lesson
+- When the session naturally concludes, call the 'complete_story_episode' function with learning data
+- After completion, if appropriate, call 'advance_to_next_episode' to progress them
+- Make the experience interactive and engaging"""
+            logger.info("Using enhanced Firebase system prompt with story completion")
         
         messages = [
             {
@@ -1879,16 +1814,150 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
             },
         ]
 
-        context = OpenAILLMContext(messages)
+        context = OpenAILLMContext(messages, tools=story_completion_functions)
         context_aggregator = llm.create_context_aggregator(context)
 
-        # Pipeline - exactly like 07-interruptible.py
+        # Function to handle story completion calls
+        async def handle_story_completion(function_name: str, tool_call_id: str, arguments: dict):
+            """Handle function calls from OpenAI for story completion"""
+            logger.info(f"Story completion function called: {function_name} with args: {arguments}")
+            
+            try:
+                if function_name == "complete_story_episode":
+                    if user and firebase_service:
+                        # Calculate time spent
+                        time_spent_minutes = (datetime.now(timezone.utc) - conversation_start_time).total_seconds() / 60
+                        
+                        # Update user progress
+                        words_learned = arguments.get("words_learned", [])
+                        topics_covered = arguments.get("topics_covered", [])
+                        
+                        # Get current user data
+                        current_user_data = await firebase_service.get_document("users", device_id)
+                        if not current_user_data:
+                            # Create basic user entry if doesn't exist
+                            logger.info(f"Creating basic user entry for device {device_id}")
+                            current_user_data = {
+                                "device_id": device_id,
+                                "progress": {
+                                    "season": 1,
+                                    "episode": 1,
+                                    "episodes_completed": 0,
+                                    "words_learnt": [],
+                                    "topics_learnt": [],
+                                    "total_time_minutes": 0
+                                },
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "last_seen": datetime.now(timezone.utc).isoformat()
+                            }
+                            await firebase_service.set_document("users", device_id, current_user_data)
+                        
+                        # Add new words (avoid duplicates)
+                        existing_words = set(current_user_data.get("progress", {}).get("words_learnt", []))
+                        new_words = [w for w in words_learned if w.lower() not in [ew.lower() for ew in existing_words]]
+                        all_words = list(existing_words) + new_words
+                        
+                        # Add new topics (avoid duplicates) 
+                        existing_topics = set(current_user_data.get("progress", {}).get("topics_learnt", []))
+                        new_topics = [t for t in topics_covered if t.lower() not in [et.lower() for et in existing_topics]]
+                        all_topics = list(existing_topics) + new_topics
+                        
+                        # Update episodes completed
+                        episodes_completed = current_user_data.get("progress", {}).get("episodes_completed", 0) + 1
+                        
+                        # Update user document
+                        updates = {
+                            "progress.words_learnt": all_words,
+                            "progress.topics_learnt": all_topics,
+                            "progress.episodes_completed": episodes_completed,
+                            "progress.total_time_minutes": current_user_data.get("progress", {}).get("total_time_minutes", 0) + time_spent_minutes,
+                            "last_seen": datetime.now(timezone.utc).isoformat()
+                        }
+                        
+                        await firebase_service.update_document("users", device_id, updates)
+                        
+                        logger.info(f"Updated user {device_id}: +{len(new_words)} words, +{len(new_topics)} topics, +{time_spent_minutes:.1f} mins")
+                        
+                        # Log completion to conversation transcript
+                        if conversation_id:
+                            completion_data = {
+                                "episode_completed": True,
+                                "completion_time": datetime.now(timezone.utc).isoformat(),
+                                "time_spent_minutes": time_spent_minutes,
+                                "words_learned": words_learned,
+                                "topics_covered": topics_covered,
+                                "user_engagement_level": arguments.get("user_engagement_level", "medium"),
+                                "completion_summary": arguments.get("completion_summary", ""),
+                                "story_completed": arguments.get("story_completed", True)
+                            }
+                            await firebase_service.update_document("conversation_transcripts", conversation_id, completion_data)
+                    
+                    return {
+                        "status": "success",
+                        "message": f"Episode completed! Learned {len(arguments.get('words_learned', []))} new words and {len(arguments.get('topics_covered', []))} topics.",
+                        "words_added": len(arguments.get('words_learned', [])),
+                        "topics_added": len(arguments.get('topics_covered', []))
+                    }
+                
+                elif function_name == "advance_to_next_episode":
+                    if user and firebase_service:
+                        current_user_data = await firebase_service.get_document("users", device_id)
+                        if not current_user_data:
+                            # Create basic user entry if doesn't exist
+                            logger.info(f"Creating basic user entry for device {device_id}")
+                            current_user_data = {
+                                "device_id": device_id,
+                                "progress": {
+                                    "season": 1,
+                                    "episode": 1,
+                                    "episodes_completed": 0,
+                                    "words_learnt": [],
+                                    "topics_learnt": [],
+                                    "total_time_minutes": 0
+                                },
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "last_seen": datetime.now(timezone.utc).isoformat()
+                            }
+                            await firebase_service.set_document("users", device_id, current_user_data)
+                        
+                        current_season = current_user_data.get("progress", {}).get("season", 1)
+                        current_episode = current_user_data.get("progress", {}).get("episode", 1)
+                        
+                        if arguments.get("advance_type") == "next_season":
+                            new_season = current_season + 1
+                            new_episode = 1
+                        else:  # next_episode
+                            new_season = current_season
+                            new_episode = current_episode + 1
+                        
+                        # Update progress
+                        updates = {
+                            "progress.season": new_season,
+                            "progress.episode": new_episode,
+                            "last_seen": datetime.now(timezone.utc).isoformat()
+                        }
+                        
+                        await firebase_service.update_document("users", device_id, updates)
+                        
+                        logger.info(f"Advanced user {device_id} to Season {new_season}, Episode {new_episode}")
+                    
+                    return {
+                        "status": "success", 
+                        "message": f"Advanced to {arguments.get('advance_type', 'next episode')}!",
+                        "reason": arguments.get("reason", "Story completed")
+                    }
+                
+            except Exception as e:
+                logger.error(f"Error handling story completion: {e}")
+                return {"status": "error", "message": str(e)}
+
+        # Pipeline - exactly like 07-interruptible.py but with function calling support
         pipeline = Pipeline(
             [
                 transport.input(),  # Transport user input
                 stt,
                 context_aggregator.user(),  # User responses
-                llm,  # LLM
+                llm,  # LLM with function calling
                 tts,  # TTS
                 transport.output(),  # Transport bot output
                 context_aggregator.assistant(),  # Assistant spoken responses
@@ -1918,10 +1987,10 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
             # Kick off the conversation - exactly like 07-interruptible.py
             if custom_system_prompt:
                 # For custom prompts, give a more generic introduction
-                messages.append({"role": "system", "content": "Please introduce yourself to the user according to your role and start the conversation."})
+                messages.append({"role": "system", "content": "Please introduce yourself to the user according to your role and start the interactive story session."})
             else:
                 # Use the standard introduction for Firebase users
-                messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+                messages.append({"role": "system", "content": "Please introduce yourself to the user and begin their learning episode."})
             
             await task.queue_frames([context_aggregator.user().get_context_frame()])
 
@@ -1939,17 +2008,20 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
                         for msg in messages[1:]:  # Skip system prompt
                             conversation_messages.append(msg)
                         
+                        # Calculate final session time
+                        final_time_spent = (datetime.now(timezone.utc) - conversation_start_time).total_seconds() / 60
+                        
                         # Update transcript with conversation messages
                         transcript_doc['messages'] = conversation_messages
                         transcript_doc['ended_at'] = datetime.now(timezone.utc).isoformat()
                         transcript_doc['custom_prompt_used'] = bool(custom_system_prompt)
+                        transcript_doc['total_session_time_minutes'] = final_time_spent
                         
                         await firebase_service.update_document("conversation_transcripts", conversation_id, transcript_doc)
                         
                         # Update user progress if appropriate
                         if user:
-                            logger.info(f"Conversation {conversation_id} completed for user {user.email}")
-                            # TODO: Add logic to determine if episode was completed and update progress
+                            logger.info(f"Conversation {conversation_id} completed for user {user.email} - Duration: {final_time_spent:.1f} mins")
                             
                 except Exception as e:
                     logger.error(f"Failed to finalize conversation {conversation_id}: {e}")
