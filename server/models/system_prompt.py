@@ -55,6 +55,7 @@ class SystemPromptResponse(BaseModel):
     """Response model for system prompt data"""
     season: int
     episode: int
+    prompt: str  # Added the actual prompt content
     prompt_type: str
     prompt_length: int
     version: int
@@ -63,13 +64,32 @@ class SystemPromptResponse(BaseModel):
     updated_at: Optional[datetime]
     metadata: Dict[str, Any]
     
+    # Add convenience properties for backward compatibility
+    @property
+    def title(self) -> str:
+        """Get title from metadata or generate default"""
+        return self.metadata.get('title', f"Season {self.season}, Episode {self.episode}")
+    
+    @property
+    def content(self) -> str:
+        """Alias for prompt content"""
+        return self.prompt
+    
     @classmethod
     def from_system_prompt(cls, prompt: SystemPrompt) -> "SystemPromptResponse":
         """Create response from SystemPrompt model"""
+        # Handle prompt_type - it might be a string or enum
+        prompt_type_value = prompt.prompt_type
+        if hasattr(prompt_type_value, 'value'):
+            prompt_type_str = prompt_type_value.value
+        else:
+            prompt_type_str = str(prompt_type_value)
+            
         return cls(
             season=prompt.season,
             episode=prompt.episode,
-            prompt_type=prompt.prompt_type.value,
+            prompt=prompt.prompt,  # Include the actual prompt content
+            prompt_type=prompt_type_str,
             prompt_length=len(prompt.prompt),
             version=prompt.version,
             is_active=prompt.is_active,

@@ -28,26 +28,6 @@ class PromptService(LoggerMixin):
         """Generate key for prompt storage"""
         return f"s{season}e{episode}"
     
-    def clear_cache(self) -> None:
-        """Clear the in-memory prompt cache"""
-        self._prompts.clear()
-        self.log_info("Prompt cache cleared")
-    
-    def invalidate_prompt_cache(self, season: int, episode: int) -> None:
-        """Invalidate cache for a specific prompt"""
-        prompt_key = self._get_prompt_key(season, episode)
-        if prompt_key in self._prompts:
-            del self._prompts[prompt_key]
-            self.log_info(f"Cache invalidated for prompt S{season}E{episode}")
-    
-    def get_cache_status(self) -> Dict[str, Any]:
-        """Get cache status information"""
-        return {
-            "cached_prompts": len(self._prompts),
-            "prompt_keys": list(self._prompts.keys()),
-            "firebase_enabled": self.firebase_service.use_firebase
-        }
-    
     async def create_system_prompt(self, prompt_request: SystemPromptRequest) -> SystemPromptResponse:
         """
         Create or update a system prompt
@@ -109,7 +89,6 @@ class PromptService(LoggerMixin):
     async def get_system_prompt(self, season: int, episode: int) -> SystemPromptResponse:
         """
         Get system prompt for specific season and episode
-        Always fetches fresh data from Firebase when available
         
         Args:
             season: Season number
@@ -126,7 +105,6 @@ class PromptService(LoggerMixin):
         prompt_key = self._get_prompt_key(season, episode)
         
         if self.firebase_service.use_firebase:
-            # Always fetch fresh from Firebase - don't use cache
             try:
                 import asyncio
                 doc_ref = self.firebase_service.db.collection('prompts').document(prompt_key)
@@ -137,18 +115,13 @@ class PromptService(LoggerMixin):
                 
                 prompt_data = doc.to_dict()
                 prompt = self._dict_to_prompt(prompt_data)
-                
-                # Update cache with fresh data
-                self._prompts[prompt_key] = prompt
-                self.log_info(f"Fetched fresh prompt from Firebase: S{season}E{episode}")
-                
             except Exception as e:
                 if isinstance(e, SystemPromptNotFoundException):
                     raise
                 self.log_error(f"Failed to get prompt from Firebase: {e}")
                 raise SystemPromptNotFoundException(season, episode)
         else:
-            # Get from memory (local storage mode)
+            # Get from memory
             prompt = self._prompts.get(prompt_key)
             if not prompt:
                 raise SystemPromptNotFoundException(season, episode)
@@ -446,17 +419,36 @@ class PromptService(LoggerMixin):
     
     def _dict_to_prompt(self, data: Dict[str, Any]) -> SystemPrompt:
         """Convert dictionary to SystemPrompt"""
-        return SystemPrompt(
-            season=data["season"],
-            episode=data["episode"],
-            prompt=data["prompt"],
-            prompt_type=PromptType(data["prompt_type"]),
-            metadata=data.get("metadata", {}),
-            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None,
-            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else None,
-            version=data.get("version", 1),
-            is_active=data.get("is_active", True)
-        )
+        try:
+            # Handle prompt_type - it might be a string or already an enum
+            prompt_type_value = data["prompt_type"]
+            if isinstance(prompt_type_value, str):
+                # Convert string to enum, with fallback to LEARNING
+                try:
+                    prompt_type = PromptType(prompt_type_value)
+                except ValueError:
+                    # If the value doesn't match enum, default to LEARNING
+                    prompt_type = PromptType.LEARNING
+            else:
+                prompt_type = prompt_type_value
+            
+            return SystemPrompt(
+                season=data["season"],
+                episode=data["episode"],
+                prompt=data["prompt"],
+                prompt_type=prompt_type,
+                metadata=data.get("metadata", {}),
+                created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None,
+                updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else None,
+                version=data.get("version", 1),
+                is_active=data.get("is_active", True)
+            )
+        except Exception as e:
+            # Add debugging info for better error tracking
+            self.log_error(f"Error converting dict to SystemPrompt: {e}")
+            self.log_error(f"Data keys: {list(data.keys()) if data else 'None'}")
+            self.log_error(f"Data content sample: {str(data)[:200] if data else 'None'}")
+            raise
 
 
 # Global service instance
