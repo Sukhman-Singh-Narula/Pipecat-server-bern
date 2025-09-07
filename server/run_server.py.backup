@@ -7,11 +7,11 @@ Works exactly like 07-interruptible.py but with dynamic system prompts
 
 import os
 import asyncio
-import aiohttp
 import uvicorn
 import argparse
 import sys
 import importlib.util
+import aiohttp
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -1666,63 +1666,66 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
     firebase_service = None
     conversation_start_time = datetime.now(timezone.utc)
     
-    try:
-        # Initialize conversation tracking if device_id is provided
-        if device_id:
-            from services.firebase_service import get_firebase_service
-            from services.enhanced_user_service import EnhancedUserService
-            from services.conversation_service import ConversationService
+    # Create an HTTP session for ElevenLabs TTS
+    async with aiohttp.ClientSession() as session:
+        try:
+            # Initialize conversation tracking if device_id is provided
+            if device_id:
+                from services.firebase_service import get_firebase_service
+                from services.enhanced_user_service import EnhancedUserService
+                from services.conversation_service import ConversationService
             
-            firebase_service = get_firebase_service()
-            user_service = EnhancedUserService(firebase_service)
-            conversation_service = ConversationService(firebase_service)
-            
-            # Get user and start conversation session
-            user = await user_service.get_user_by_device_id(device_id)
-            if user:
-                # Start a conversation session
-                conversation_id = f"{user.email}_{user.progress.season}_{user.progress.episode}_{int(datetime.now(timezone.utc).timestamp())}"
+                firebase_service = get_firebase_service()
+                user_service = EnhancedUserService(firebase_service)
+                conversation_service = ConversationService(firebase_service)
                 
-                from models.conversation import ConversationTranscript
-                transcript = ConversationTranscript(
-                    conversation_id=conversation_id,
-                    user_email=user.email,
-                    season=user.progress.season,
-                    episode=user.progress.episode
-                )
-                
-                await firebase_service.set_document(
-                    "conversation_transcripts",
-                    conversation_id,
-                    transcript.to_dict()
-                )
-                
-                logger.info(f"Started conversation session {conversation_id} for user {user.email}")
+                # Get user and start conversation session
+                user = await user_service.get_user_by_device_id(device_id)
+                if user:
+                    # Start a conversation session
+                    conversation_id = f"{user.email}_{user.progress.season}_{user.progress.episode}_{int(datetime.now(timezone.utc).timestamp())}"
+                    
+                    from models.conversation import ConversationTranscript
+                    transcript = ConversationTranscript(
+                        conversation_id=conversation_id,
+                        user_email=user.email,
+                        device_id=device_id,
+                        start_time=conversation_start_time,
+                        season=user.progress.season,
+                        episode=user.progress.episode,
+                        user_age=user.age,
+                        user_name=user.name,
+                        messages=[],
+                        story_completions=[],
+                        final_summary=""
+                    )
+                    
+                    await conversation_service.create_conversation(transcript)
+                    logger.info(f"Started conversation session {conversation_id} for user {user.email}")
 
-        # Services - exactly like 07-interruptible.py
-        stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
+            # Services - exactly like 07-interruptible.py
+            stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
-        # Debug: Check if API key is loaded
-        elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
-        elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID")
-        logger.info(f"ElevenLabs API key loaded: {elevenlabs_api_key[:10] if elevenlabs_api_key else 'None'}...")
+            # Debug: Check if API key is loaded
+            elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
+            elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "")
+            logger.info(f"ElevenLabs API key loaded: {elevenlabs_api_key[:10] if elevenlabs_api_key else 'None'}...")
+            logger.info(f"ElevenLabs Voice ID: {elevenlabs_voice_id}")
 
-        # Create aiohttp session for TTS service
-        session = aiohttp.ClientSession()
-        tts = ElevenLabsHttpTTSService(
-            session=session,
-            api_key=elevenlabs_api_key,
-            voice_id=elevenlabs_voice_id,
-        )
+            tts = ElevenLabsHttpTTSService(
+                api_key=elevenlabs_api_key,
+                voice_id=elevenlabs_voice_id,
+                aiohttp_session=session,
+            )
 
-        # Enhanced LLM with function calling for story completion
-        llm = OpenAILLMService(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            model="gpt-4",  # Use GPT-4 for better function calling
-        )
+            # Enhanced LLM with function calling for story completion
+            llm = OpenAILLMService(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                model="gpt-4",  # Use GPT-4 for better function calling
+            )
 
-        # Define story completion functions for OpenAI to call
-        story_completion_functions = [
+            # Define story completion functions for OpenAI to call
+            story_completion_functions = [
             {
                 "type": "function",
                 "function": {
@@ -2039,24 +2042,17 @@ IMPORTANT STORY COMPLETION INSTRUCTIONS:
             if device_id and device_id in active_transports:
                 del active_transports[device_id]
             await task.cancel()
-            
-            # Close aiohttp session
-            if 'session' in locals():
-                await session.close()
 
-        runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-        await runner.run(task)
-        
-    except Exception as e:
-        logger.error(f"Error in enhanced bot: {e}")
-        if device_id and device_id in active_sessions:
-            del active_sessions[device_id]
-        if device_id and device_id in active_transports:
-            del active_transports[device_id]
-        # Close aiohttp session on error
-        if 'session' in locals():
-            await session.close()
-        raise
+            runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+            await runner.run(task)
+            
+        except Exception as e:
+            logger.error(f"Error in enhanced bot: {e}")
+            if device_id and device_id in active_sessions:
+                del active_sessions[device_id]
+            if device_id and device_id in active_transports:
+                del active_transports[device_id]
+            raise
 
 async def enhanced_bot(runner_args: RunnerArguments, device_id: str = None, custom_system_prompt: str = None):
     """Enhanced bot entry point - like 07-interruptible.py but with device_id and custom prompts"""
