@@ -1783,7 +1783,7 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
         # Enhanced LLM with function calling for story completion
         llm = OpenAILLMService(
             api_key=os.getenv("OPENAI_API_KEY"),
-            model="gpt-4",  # Use GPT-4 for better function calling
+            model="gpt-5-nano-2025-08-07",  # Use GPT-5 Nano for better performance and efficiency
         )
 
         # Define story completion functions for OpenAI to call
