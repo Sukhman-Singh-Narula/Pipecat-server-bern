@@ -39,15 +39,15 @@ from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketParams
 from pipecat.transports.services.daily import DailyParams
 
 # Import our enhanced functionality
-from config.settings import get_settings, validate_settings
-from services.firebase_service import FirebaseService
-from utils import setup_logging, handle_generic_error
+from server.config.settings import get_settings, validate_settings
+from server.services.firebase_service import FirebaseService
+from server.utils import setup_logging, handle_generic_error
 
 # Import the new comprehensive API routers
-from api.enhanced_users import router as enhanced_users_router
-from api.episodes import router as episodes_router
-from api.conversations import router as conversations_router
-from routes.prompts import router as prompts_router
+from server.api.enhanced_users import router as enhanced_users_router
+from server.api.episodes import router as episodes_router
+from server.api.conversations import router as conversations_router
+from server.routes.prompts import router as prompts_router
 
 load_dotenv(override=True)
 
@@ -86,8 +86,8 @@ async def get_enhanced_system_prompt(device_id: str = None) -> str:
     
     try:
         # Get Firebase service
-        from services.firebase_service import get_firebase_service
-        from services.prompt_service import get_prompt_service
+        from server.services.firebase_service import get_firebase_service
+        from server.services.prompt_service import get_prompt_service
         
         firebase_service = get_firebase_service()
         prompt_service = get_prompt_service()
@@ -1466,7 +1466,7 @@ def create_enhanced_app() -> FastAPI:
         """Get user progress and learning data"""
         try:
             logger.info(f"🔍 UPDATED ENDPOINT - Getting user progress for device_id: {device_id}")
-            from services.firebase_service import get_firebase_service
+            from server.services.firebase_service import get_firebase_service
             firebase_service = get_firebase_service()
             
             user_data = await firebase_service.get_document("users", device_id)
@@ -1512,7 +1512,7 @@ def create_enhanced_app() -> FastAPI:
             if not device_id:
                 raise HTTPException(status_code=400, detail="device_id is required")
             
-            from services.firebase_service import get_firebase_service
+            from server.services.firebase_service import get_firebase_service
             firebase_service = get_firebase_service()
             
             # Get current user data from users collection (device_id based)
@@ -1598,7 +1598,7 @@ def create_enhanced_app() -> FastAPI:
             if not device_id:
                 raise HTTPException(status_code=400, detail="device_id is required")
             
-            from services.firebase_service import get_firebase_service
+            from server.services.firebase_service import get_firebase_service
             firebase_service = get_firebase_service()
             
             current_user_data = await firebase_service.get_document("users", device_id)
@@ -1653,6 +1653,71 @@ def create_enhanced_app() -> FastAPI:
             logger.error(f"Error advancing user progress: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
+    # Add three new device IDs endpoint
+    @app.post("/api/add-devices",
+              summary="Add three new device IDs",
+              description="Create three new device IDs with default user data")
+    async def add_three_devices():
+        """Add three new device IDs with default data"""
+        try:
+            from server.services.firebase_service import get_firebase_service
+            firebase_service = get_firebase_service()
+            
+            # Generate three unique device IDs
+            import uuid
+            device_ids = [
+                f"device_{uuid.uuid4().hex[:8]}",
+                f"device_{uuid.uuid4().hex[:8]}",
+                f"device_{uuid.uuid4().hex[:8]}"
+            ]
+            
+            created_devices = []
+            
+            for device_id in device_ids:
+                # Create default user data
+                default_user_data = {
+                    "device_id": device_id,
+                    "name": f"User {device_id[-4:]}",  # Use last 4 chars of device_id
+                    "age": 8,  # Default age
+                    "email": f"{device_id}@example.com",
+                    "progress": {
+                        "season": 1,
+                        "episode": 1,
+                        "episodes_completed": 0,
+                        "words_learnt": [],
+                        "topics_learnt": [],
+                        "total_time_minutes": 0
+                    },
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "last_seen": datetime.now(timezone.utc).isoformat(),
+                    "status": "active"
+                }
+                
+                # Save to Firebase using device_id as document ID
+                await firebase_service.set_document("users", device_id, default_user_data)
+                
+                created_devices.append({
+                    "device_id": device_id,
+                    "name": default_user_data["name"],
+                    "email": default_user_data["email"],
+                    "age": default_user_data["age"],
+                    "season": 1,
+                    "episode": 1
+                })
+                
+                logger.info(f"Created new device: {device_id}")
+            
+            return {
+                "status": "success",
+                "message": "Successfully created 3 new device IDs",
+                "devices": created_devices,
+                "total_created": len(created_devices)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating new devices: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
     return app
 
 async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None, custom_system_prompt: str = None):
@@ -1669,9 +1734,9 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
     try:
         # Initialize conversation tracking if device_id is provided
         if device_id:
-            from services.firebase_service import get_firebase_service
-            from services.enhanced_user_service import EnhancedUserService
-            from services.conversation_service import ConversationService
+            from server.services.firebase_service import get_firebase_service
+            from server.services.enhanced_user_service import EnhancedUserService
+            from server.services.conversation_service import ConversationService
             
             firebase_service = get_firebase_service()
             user_service = EnhancedUserService(firebase_service)
@@ -1710,7 +1775,7 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
         # Create aiohttp session for TTS service
         session = aiohttp.ClientSession()
         tts = ElevenLabsHttpTTSService(
-            session=session,
+            aiohttp_session=session,
             api_key=elevenlabs_api_key,
             voice_id=elevenlabs_voice_id,
         )

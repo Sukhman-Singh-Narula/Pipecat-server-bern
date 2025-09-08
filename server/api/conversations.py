@@ -7,9 +7,9 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, EmailStr
 from datetime import datetime
 
-from services.conversation_service import ConversationService
-from services.firebase_service import get_firebase_service
-from models.conversation import ConversationTranscript, ConversationSummary, ConversationMessage
+from server.services.conversation_service import ConversationService
+from server.services.firebase_service import get_firebase_service
+from server.models.conversation import ConversationTranscript, ConversationSummary, ConversationMessage
 
 # Initialize router
 router = APIRouter(prefix="/conversations", tags=["Conversations"])

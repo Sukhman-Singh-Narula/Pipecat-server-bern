@@ -8,7 +8,7 @@ import json
 import os
 from loguru import logger
 
-from config.settings import get_settings
+from server.config.settings import get_settings
 
 
 class FirebaseService:

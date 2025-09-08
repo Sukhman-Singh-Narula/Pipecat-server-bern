@@ -2,13 +2,13 @@
 Authentication and user registration routes
 """
 from fastapi import APIRouter, HTTPException, status, Depends
-from models.user import UserRegistrationRequest, UserResponse
-from services.user_service import get_user_service, UserService
-from utils.exceptions import (
+from server.models.user import UserRegistrationRequest, UserResponse
+from server.services.user_service import get_user_service, UserService
+from server.utils.exceptions import (
     ValidationException, UserAlreadyExistsException, 
     handle_validation_error, handle_user_error, handle_generic_error
 )
-from utils.validators import SecurityValidator, DeviceValidator
+from server.utils.validators import SecurityValidator, DeviceValidator
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])

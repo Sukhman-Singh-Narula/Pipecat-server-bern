@@ -6,8 +6,8 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 from loguru import logger
 
-from models.conversation import ConversationTranscript, ConversationSummary, ConversationMessage
-from services.firebase_service import FirebaseService
+from server.models.conversation import ConversationTranscript, ConversationSummary, ConversationMessage
+from server.services.firebase_service import FirebaseService
 
 class ConversationService:
     """Service for managing conversation transcripts and summaries"""

@@ -7,9 +7,9 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, EmailStr
 from datetime import datetime
 
-from services.enhanced_user_service import EnhancedUserService
-from services.firebase_service import get_firebase_service
-from models.enhanced_user import EnhancedUser, UserStatus
+from server.services.enhanced_user_service import EnhancedUserService
+from server.services.firebase_service import get_firebase_service
+from server.models.enhanced_user import EnhancedUser, UserStatus
 
 # Initialize router
 router = APIRouter(prefix="/users", tags=["Enhanced Users"])

@@ -6,8 +6,8 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime
 from loguru import logger
 
-from models.episode_prompt import EpisodePrompt
-from services.firebase_service import FirebaseService
+from server.models.episode_prompt import EpisodePrompt
+from server.services.firebase_service import FirebaseService
 
 class EpisodePromptService:
     """Service for managing episode prompts and learning content"""
