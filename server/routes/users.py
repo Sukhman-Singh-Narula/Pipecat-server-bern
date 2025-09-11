@@ -5,9 +5,9 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List, Optional
 from pydantic import BaseModel
 
-from server.models.user import UserResponse, SessionInfo
-from server.services.user_service import get_user_service, UserService
-from server.utils.exceptions import (
+from models.user import UserResponse, SessionInfo
+from services.user_service import get_user_service, UserService
+from utils.exceptions import (
     ValidationException, UserNotFoundException,
     handle_validation_error, handle_user_error, handle_generic_error
 )

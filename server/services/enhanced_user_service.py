@@ -6,8 +6,8 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 from loguru import logger
 
-from server.models.enhanced_user import EnhancedUser, UserStatus, Parent, Progress
-from server.services.firebase_service import FirebaseService
+from models.enhanced_user import EnhancedUser, UserStatus, Parent, Progress
+from services.firebase_service import FirebaseService
 
 class EnhancedUserService:
     """Enhanced user service with comprehensive learning tracking"""

@@ -5,12 +5,12 @@ from fastapi import APIRouter, HTTPException, status, Query, Depends
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 
-from server.models.system_prompt import (
+from models.system_prompt import (
     SystemPromptRequest, SystemPromptResponse, PromptValidationResult,
     SeasonOverview, PromptType
 )
-from server.services.prompt_service import get_prompt_service, PromptService
-from server.utils.exceptions import (
+from services.prompt_service import get_prompt_service, PromptService
+from utils.exceptions import (
     ValidationException, SystemPromptNotFoundException,
     handle_validation_error, handle_generic_error
 )

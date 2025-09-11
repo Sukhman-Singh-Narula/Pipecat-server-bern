@@ -4,14 +4,14 @@ System prompt service for managing prompts and episodes
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from server.models.system_prompt import (
+from models.system_prompt import (
     SystemPrompt, SystemPromptRequest, SystemPromptResponse, 
     PromptType, PromptValidationResult, SeasonOverview
 )
-from server.services.firebase_service import get_firebase_service
-from server.utils.exceptions import ValidationException, SystemPromptNotFoundException
-from server.utils.validators import PromptValidator
-from server.utils.logger import LoggerMixin
+from services.firebase_service import get_firebase_service
+from utils.exceptions import ValidationException, SystemPromptNotFoundException
+from utils.validators import PromptValidator
+from utils.logger import LoggerMixin
 
 
 class PromptService(LoggerMixin):

@@ -4,11 +4,11 @@ User service for managing user operations
 from datetime import datetime
 from typing import Optional, List
 
-from server.models.user import User, UserRegistrationRequest, UserResponse, SessionInfo
-from server.services.firebase_service import get_firebase_service
-from server.utils.exceptions import ValidationException, UserNotFoundException
-from server.utils.validators import DeviceValidator, SecurityValidator
-from server.utils.logger import LoggerMixin
+from models.user import User, UserRegistrationRequest, UserResponse, SessionInfo
+from services.firebase_service import get_firebase_service
+from utils.exceptions import ValidationException, UserNotFoundException
+from utils.validators import DeviceValidator, SecurityValidator
+from utils.logger import LoggerMixin
 
 
 class UserService(LoggerMixin):

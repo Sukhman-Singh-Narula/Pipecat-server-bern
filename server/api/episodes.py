@@ -7,9 +7,9 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from datetime import datetime
 
-from server.services.episode_prompt_service import EpisodePromptService
-from server.services.firebase_service import get_firebase_service
-from server.models.episode_prompt import EpisodePrompt
+from services.episode_prompt_service import EpisodePromptService
+from services.firebase_service import get_firebase_service
+from models.episode_prompt import EpisodePrompt
 
 # Initialize router
 router = APIRouter(prefix="/episodes", tags=["Episode Prompts"])

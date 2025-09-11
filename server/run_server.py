@@ -29,6 +29,8 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.frames.frames import AudioRawFrame
 from pipecat.runner.types import RunnerArguments, SmallWebRTCRunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.elevenlabs.tts import ElevenLabsHttpTTSService
@@ -39,17 +41,87 @@ from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketParams
 from pipecat.transports.services.daily import DailyParams
 
 # Import our enhanced functionality
-from server.config.settings import get_settings, validate_settings
-from server.services.firebase_service import FirebaseService
-from server.utils import setup_logging, handle_generic_error
+from config.settings import get_settings, validate_settings
+from services.firebase_service import FirebaseService
+from utils import setup_logging, handle_generic_error
 
 # Import the new comprehensive API routers
-from server.api.enhanced_users import router as enhanced_users_router
-from server.api.episodes import router as episodes_router
-from server.api.conversations import router as conversations_router
-from server.routes.prompts import router as prompts_router
+from api.enhanced_users import router as enhanced_users_router
+from api.episodes import router as episodes_router
+from api.conversations import router as conversations_router
+from routes.prompts import router as prompts_router
 
 load_dotenv(override=True)
+
+# Custom Audio Processors for Volume and Speed Control
+import numpy as np
+from scipy import signal
+from typing import AsyncGenerator
+
+class AudioVolumeProcessor(FrameProcessor):
+    """Custom processor to increase audio volume"""
+    
+    def __init__(self, volume_multiplier: float = 1.5):
+        super().__init__()
+        self._volume_multiplier = volume_multiplier
+    
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        
+        if isinstance(frame, AudioRawFrame):
+            # Convert bytes to numpy array
+            audio_data = np.frombuffer(frame.audio, dtype=np.int16)
+            
+            # Apply volume multiplication with clipping to prevent overflow
+            amplified = (audio_data.astype(np.float32) * self._volume_multiplier)
+            amplified = np.clip(amplified, -32768, 32767).astype(np.int16)
+            
+            # Create new frame with amplified audio
+            new_frame = AudioRawFrame(
+                audio=amplified.tobytes(),
+                sample_rate=frame.sample_rate,
+                num_channels=frame.num_channels
+            )
+            await self.push_frame(new_frame, direction)
+        else:
+            await self.push_frame(frame, direction)
+
+class AudioSpeedProcessor(FrameProcessor):
+    """Custom processor to increase audio playback speed"""
+    
+    def __init__(self, speed_multiplier: float = 1.1):
+        super().__init__()
+        self._speed_multiplier = speed_multiplier
+    
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        
+        if isinstance(frame, AudioRawFrame):
+            # Convert bytes to numpy array
+            audio_data = np.frombuffer(frame.audio, dtype=np.int16)
+            
+            # Simple speed change by resampling
+            # For 1.1x speed, we take every 1.1th sample
+            original_length = len(audio_data)
+            new_length = int(original_length / self._speed_multiplier)
+            
+            if new_length > 0:
+                # Resample the audio
+                indices = np.linspace(0, original_length - 1, new_length)
+                resampled = np.interp(indices, np.arange(original_length), audio_data.astype(np.float32))
+                resampled = resampled.astype(np.int16)
+                
+                # Create new frame with speed-adjusted audio
+                new_frame = AudioRawFrame(
+                    audio=resampled.tobytes(),
+                    sample_rate=frame.sample_rate,
+                    num_channels=frame.num_channels
+                )
+                await self.push_frame(new_frame, direction)
+            else:
+                await self.push_frame(frame, direction)
+        else:
+            await self.push_frame(frame, direction)
 
 # Global state for managing active sessions - like 07-interruptible.py
 active_sessions: Dict[str, Any] = {}
@@ -86,8 +158,8 @@ async def get_enhanced_system_prompt(device_id: str = None) -> str:
     
     try:
         # Get Firebase service
-        from server.services.firebase_service import get_firebase_service
-        from server.services.prompt_service import get_prompt_service
+        from services.firebase_service import get_firebase_service
+        from services.prompt_service import get_prompt_service
         
         firebase_service = get_firebase_service()
         prompt_service = get_prompt_service()
@@ -1466,7 +1538,7 @@ def create_enhanced_app() -> FastAPI:
         """Get user progress and learning data"""
         try:
             logger.info(f"🔍 UPDATED ENDPOINT - Getting user progress for device_id: {device_id}")
-            from server.services.firebase_service import get_firebase_service
+            from services.firebase_service import get_firebase_service
             firebase_service = get_firebase_service()
             
             user_data = await firebase_service.get_document("users", device_id)
@@ -1512,7 +1584,7 @@ def create_enhanced_app() -> FastAPI:
             if not device_id:
                 raise HTTPException(status_code=400, detail="device_id is required")
             
-            from server.services.firebase_service import get_firebase_service
+            from services.firebase_service import get_firebase_service
             firebase_service = get_firebase_service()
             
             # Get current user data from users collection (device_id based)
@@ -1598,7 +1670,7 @@ def create_enhanced_app() -> FastAPI:
             if not device_id:
                 raise HTTPException(status_code=400, detail="device_id is required")
             
-            from server.services.firebase_service import get_firebase_service
+            from services.firebase_service import get_firebase_service
             firebase_service = get_firebase_service()
             
             current_user_data = await firebase_service.get_document("users", device_id)
@@ -1660,7 +1732,7 @@ def create_enhanced_app() -> FastAPI:
     async def add_three_devices():
         """Add three new device IDs with default data"""
         try:
-            from server.services.firebase_service import get_firebase_service
+            from services.firebase_service import get_firebase_service
             firebase_service = get_firebase_service()
             
             # Generate three unique device IDs
@@ -1718,6 +1790,264 @@ def create_enhanced_app() -> FastAPI:
             logger.error(f"Error creating new devices: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
+    # =============================================================================
+    # AUTHENTICATION ENDPOINTS
+    # =============================================================================
+    
+    # Mobile app endpoints
+    @app.post("/api/auth/generate-claim-token",
+              summary="Generate claim token for mobile app user",
+              description="Generate a temporary token for claiming ESP32 devices")
+    async def generate_claim_token(request: Request):
+        """Generate claim token for mobile app user"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            body = await request.json()
+            email = body.get("email")
+            
+            if not email:
+                raise HTTPException(status_code=400, detail="Email is required")
+            
+            claim_token = await auth_service.generate_claim_token_for_user(email)
+            
+            return {
+                "success": True,
+                "claim_token": claim_token.token,
+                "expires_at": claim_token.expires_at.isoformat(),
+                "expires_in_minutes": 5
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating claim token: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/api/auth/user-devices/{email}",
+             summary="Get user's claimed devices",
+             description="Get all devices claimed by a user")
+    async def get_user_devices(email: str):
+        """Get all devices claimed by user"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            devices = await auth_service.get_user_devices(email)
+            
+            return {
+                "success": True,
+                "email": email,
+                "devices": devices,
+                "total_devices": len(devices)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting user devices: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # ESP32 device endpoints
+    @app.post("/api/device/register",
+              summary="Register new ESP32 device",
+              description="Register a new ESP32 device in the system")
+    async def register_device(request: Request):
+        """Register new ESP32 device"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            body = await request.json()
+            mac_address = body.get("mac_address")
+            hardware_id = body.get("hardware_id") 
+            firmware_version = body.get("firmware_version", "1.0.0")
+            
+            if not mac_address or not hardware_id:
+                raise HTTPException(status_code=400, detail="MAC address and hardware ID are required")
+            
+            device_reg = await auth_service.register_new_device(mac_address, hardware_id, firmware_version)
+            
+            return {
+                "success": True,
+                "device_id": device_reg.device_id,
+                "status": device_reg.status.value,
+                "message": "Device registered successfully"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error registering device: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/api/device/claim",
+              summary="Claim device with token",
+              description="Claim ESP32 device using mobile app generated token")
+    async def claim_device(request: Request):
+        """Claim device with claim token"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            body = await request.json()
+            device_id = body.get("device_id")
+            mac_address = body.get("mac_address")
+            claim_token = body.get("claim_token")
+            
+            if not all([device_id, mac_address, claim_token]):
+                raise HTTPException(status_code=400, detail="Device ID, MAC address, and claim token are required")
+            
+            result = await auth_service.claim_device_with_token(device_id, mac_address, claim_token)
+            
+            if result["success"]:
+                return result
+            else:
+                raise HTTPException(status_code=400, detail=result["error"])
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error claiming device: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/api/device/authenticate",
+              summary="Authenticate device and get JWT",
+              description="Authenticate claimed ESP32 device and get JWT token")
+    async def authenticate_device(request: Request):
+        """Authenticate device and provide JWT"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            body = await request.json()
+            device_id = body.get("device_id")
+            mac_address = body.get("mac_address")
+            
+            if not device_id or not mac_address:
+                raise HTTPException(status_code=400, detail="Device ID and MAC address are required")
+            
+            result = await auth_service.authenticate_device_and_get_jwt(device_id, mac_address)
+            
+            if result["success"]:
+                return result
+            else:
+                raise HTTPException(status_code=401, detail=result["error"])
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error authenticating device: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/api/device/verify",
+              summary="Verify device JWT token",
+              description="Verify ESP32 device JWT token")
+    async def verify_device(request: Request):
+        """Verify device JWT token"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            body = await request.json()
+            jwt_token = body.get("jwt_token")
+            hashed_device_id = body.get("hashed_device_id")
+            
+            if not jwt_token or not hashed_device_id:
+                raise HTTPException(status_code=400, detail="JWT token and hashed device ID are required")
+            
+            result = await auth_service.verify_device_jwt(jwt_token, hashed_device_id)
+            
+            if result["success"]:
+                return result
+            else:
+                raise HTTPException(status_code=401, detail=result["error"])
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error verifying device: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/api/device/heartbeat",
+              summary="Device heartbeat",
+              description="Update ESP32 device heartbeat to maintain active session")
+    async def device_heartbeat(request: Request):
+        """Update device heartbeat"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            body = await request.json()
+            device_id = body.get("device_id")
+            hashed_device_id = body.get("hashed_device_id")
+            
+            if not device_id or not hashed_device_id:
+                raise HTTPException(status_code=400, detail="Device ID and hashed device ID are required")
+            
+            result = await auth_service.device_heartbeat(device_id, hashed_device_id)
+            
+            if result["success"]:
+                return result
+            else:
+                raise HTTPException(status_code=400, detail=result["error"])
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating heartbeat: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Admin/utility endpoints
+    @app.get("/api/device/check/{device_id}",
+             summary="Check device validity",
+             description="Check if device is registered and active")
+    async def check_device_validity(device_id: str):
+        """Check if device is valid and active"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            is_valid = await auth_service.is_device_valid_and_active(device_id)
+            device_reg = await auth_service.get_device_registration(device_id)
+            
+            if device_reg:
+                return {
+                    "device_id": device_id,
+                    "is_valid": is_valid,
+                    "status": device_reg.status.value,
+                    "claimed_by": device_reg.claimed_by_email,
+                    "last_seen": device_reg.last_seen.isoformat() if device_reg.last_seen else None
+                }
+            else:
+                return {
+                    "device_id": device_id,
+                    "is_valid": False,
+                    "status": "not_found",
+                    "claimed_by": None,
+                    "last_seen": None
+                }
+            
+        except Exception as e:
+            logger.error(f"Error checking device validity: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/api/device/active",
+             summary="Get active devices",
+             description="Get all currently active ESP32 devices")
+    async def get_active_devices():
+        """Get all active devices"""
+        try:
+            from services.auth_service import get_auth_service
+            auth_service = get_auth_service()
+            
+            active_devices = await auth_service.get_active_devices()
+            
+            return {
+                "success": True,
+                "active_devices": active_devices,
+                "total_active": len(active_devices)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting active devices: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
     return app
 
 async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArguments, device_id: str = None, custom_system_prompt: str = None):
@@ -1734,9 +2064,9 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
     try:
         # Initialize conversation tracking if device_id is provided
         if device_id:
-            from server.services.firebase_service import get_firebase_service
-            from server.services.enhanced_user_service import EnhancedUserService
-            from server.services.conversation_service import ConversationService
+            from services.firebase_service import get_firebase_service
+            from services.enhanced_user_service import EnhancedUserService
+            from services.conversation_service import ConversationService
             
             firebase_service = get_firebase_service()
             user_service = EnhancedUserService(firebase_service)
@@ -1779,6 +2109,10 @@ async def run_enhanced_bot(transport: BaseTransport, runner_args: RunnerArgument
             api_key=elevenlabs_api_key,
             voice_id=elevenlabs_voice_id,
         )
+
+        # Audio processing for volume and speed enhancement
+        volume_processor = AudioVolumeProcessor(volume_multiplier=1.5)  # 50% volume increase
+        speed_processor = AudioSpeedProcessor(speed_multiplier=1.1)     # 1.1x speed increase
 
         # Enhanced LLM with function calling for story completion
         llm = OpenAILLMService(
@@ -2023,7 +2357,7 @@ IMPORTANT STORY COMPLETION INSTRUCTIONS:
                 logger.error(f"Error handling story completion: {e}")
                 return {"status": "error", "message": str(e)}
 
-        # Pipeline - exactly like 07-interruptible.py but with function calling support
+        # Pipeline - exactly like 07-interruptible.py but with function calling support and audio enhancement
         pipeline = Pipeline(
             [
                 transport.input(),  # Transport user input
@@ -2031,6 +2365,8 @@ IMPORTANT STORY COMPLETION INSTRUCTIONS:
                 context_aggregator.user(),  # User responses
                 llm,  # LLM with function calling
                 tts,  # TTS
+                volume_processor,  # Increase volume by 50%
+                speed_processor,   # Increase speed by 1.1x
                 transport.output(),  # Transport bot output
                 context_aggregator.assistant(),  # Assistant spoken responses
             ]
